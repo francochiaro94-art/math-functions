@@ -1,0 +1,282 @@
+{
+  "project": "Interactive Curve Fitting Lab",
+  "branchName": "ralph/curve-fitting-lab",
+  "description": "Enable an advanced math/data user to intuitively draw, fit, analyze, and explore mathematical functions over a 2D Cartesian plane using a world-class, playful-yet-modern UI, running fully offline on local resources.",
+  "nonGoals": [
+    "User accounts or authentication",
+    "Session persistence or history",
+    "3D plotting",
+    "Sharing or exporting results",
+    "Paid APIs or cloud services"
+  ],
+  "assumptions": [
+    "User has graduate-level math literacy",
+    "Application runs as a local web app (localhost)",
+    "Primary execution is fully offline",
+    "Machine has ~16GB RAM available",
+    "Maximum acceptable model runtime is 120 seconds"
+  ],
+  "userStories": [
+    {
+      "id": "US-001",
+      "epic": "E1: Cartesian Chart & Interaction Core",
+      "title": "Empty 2D Cartesian chart",
+      "description": "As a user, I want to see an empty 2D Cartesian chart so that I can start from a clean mathematical space.",
+      "acceptanceCriteria": [
+        "The chart renders with visible X and Y axes intersecting at (0,0)",
+        "Axes include tick marks and numeric labels",
+        "The chart starts with no plotted data",
+        "The background is neutral with subtle gridlines",
+        "Axis subdivisions adjust dynamically based on zoom level",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "epic": "E1: Cartesian Chart & Interaction Core",
+      "title": "Zoom and pan the chart",
+      "description": "As a user, I want to zoom and pan the chart seamlessly so that I can explore different scales.",
+      "acceptanceCriteria": [
+        "Mouse wheel or trackpad zooms in and out smoothly",
+        "Zooming rescales axis ticks and labels automatically",
+        "Panning is enabled via click-and-drag or equivalent gesture",
+        "No visual jitter or redraw artifacts occur during zoom/pan",
+        "Zoom level has no hard-coded minimum or maximum beyond numerical stability",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "epic": "E2: Point Creation & Data Ingestion",
+      "title": "Painting mode for drawing points",
+      "description": "As a user, I want a painting mode so that I can freely draw data points on the chart.",
+      "acceptanceCriteria": [
+        "A clearly labeled toggle enables and disables painting mode",
+        "Clicking on the chart in painting mode creates a dot at the corresponding (x,y)",
+        "Dots appear immediately with visual feedback",
+        "There is no limit to dots until the global max is reached",
+        "Dots persist until erased or reset",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "epic": "E2: Point Creation & Data Ingestion",
+      "title": "CSV upload for data points",
+      "description": "As a user, I want to upload a CSV with x/y values so that points are auto-plotted.",
+      "acceptanceCriteria": [
+        "CSV upload accepts two-column numeric data",
+        "Points are rendered automatically upon upload",
+        "If point count exceeds the maximum, data is downsampled",
+        "User is warned when downsampling occurs and shown original vs final counts",
+        "Invalid rows are ignored with a visible warning",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "epic": "E2: Point Creation & Data Ingestion",
+      "title": "Maximum point count enforcement",
+      "description": "As a user, I want a maximum number of points enforced so that local fitting remains performant.",
+      "acceptanceCriteria": [
+        "Maximum point count is set to 50,000",
+        "This limit is justified by local RAM and algorithmic complexity",
+        "Painting mode is disabled once the limit is reached",
+        "CSV uploads exceeding the limit are automatically downsampled",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "epic": "E3: Model Fitting & Selection",
+      "title": "Trigger curve fitting",
+      "description": "As a user, I want to trigger curve fitting so that a function is estimated from my points.",
+      "acceptanceCriteria": [
+        "A prominent 'Estimate Function' button is available",
+        "The system fits models fully offline",
+        "Supported on-prem libraries include: scikit-learn, scipy, numpy, sympy, gplearn, pygam, statsmodels",
+        "Model families considered include linear, polynomial, exponential, logarithmic, rational, splines, Gaussian processes, symbolic regression, and small neural networks",
+        "No paid or authenticated APIs are used",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": "Backend fitting logic runs in Python. Frontend triggers via API call."
+    },
+    {
+      "id": "US-007",
+      "epic": "E3: Model Fitting & Selection",
+      "title": "Choose fitting objective",
+      "description": "As a user, I want to choose the fitting objective so that the result aligns with my goal.",
+      "acceptanceCriteria": [
+        "A dropdown allows selecting: best predictive accuracy, best interpretability, or balanced",
+        "Default selection is best predictive accuracy",
+        "The chosen objective influences model ranking heuristics",
+        "The selected objective is displayed during fitting",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "epic": "E3: Model Fitting & Selection",
+      "title": "Automatic best model selection",
+      "description": "As a user, I want the best model selected automatically so that I don't need to manually compare models.",
+      "acceptanceCriteria": [
+        "Multiple candidate models are evaluated internally",
+        "The best model is chosen based on the selected objective",
+        "Heuristics used for selection are listed and visible to the user",
+        "Only the winning model is rendered by default",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "epic": "E4: Fitting Progress & Feedback UI",
+      "title": "Rich visual feedback during fitting",
+      "description": "As a user, I want rich visual feedback while fitting runs so that I understand what the system is doing.",
+      "acceptanceCriteria": [
+        "A full-width progress panel appears during fitting",
+        "Steps are shown sequentially: data validation, model selection, fitting, assumption checks, error computation, comparison",
+        "Each step animates with motion, tilt, and green-highlighted success states",
+        "An estimated remaining time (up to 120s) is displayed and updated",
+        "UI remains responsive during computation",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "epic": "E5: Results Visualization & Quality Assessment",
+      "title": "Display fitted curve over points",
+      "description": "As a user, I want to see the fitted curve over my points so that I can visually assess the fit.",
+      "acceptanceCriteria": [
+        "The fitted function is plotted as a smooth curve over the dots",
+        "The curve color contrasts clearly with the points",
+        "Hovering the curve shows live (x,y) coordinates",
+        "The plot updates instantly when a new fit is computed",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-011",
+      "epic": "E5: Results Visualization & Quality Assessment",
+      "title": "Display function and fit statistics",
+      "description": "As a user, I want to see the function and fit statistics so that I can evaluate model quality.",
+      "acceptanceCriteria": [
+        "The explicit function is displayed in readable mathematical notation",
+        "Statistics include R², RMSE, MAE, AIC/BIC where applicable",
+        "Each statistic has hover or expandable explanations",
+        "A quality tag (bad / regular / good) is assigned",
+        "Criteria: bad if R² < 0.6 or violated assumptions; regular if 0.6–0.85; good if > 0.85 and assumptions mostly met",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-012",
+      "epic": "E6: Advanced Function Analysis",
+      "title": "Compute analytical properties",
+      "description": "As a user, I want to compute analytical properties of the function so that I can study its behavior.",
+      "acceptanceCriteria": [
+        "A button computes first and second derivatives using sympy",
+        "Global and local extrema are detected if they exist",
+        "Asymptotes are identified and displayed when applicable",
+        "Results are shown both numerically and visually on the chart",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-013",
+      "epic": "E6: Advanced Function Analysis",
+      "title": "Compute area under curve (integral)",
+      "description": "As a user, I want to compute the area under the curve between two points so that I can analyze integrals.",
+      "acceptanceCriteria": [
+        "User can select points A and B on the curve",
+        "Vertical lines are drawn from A and B to the x-axis",
+        "The enclosed area is lightly shaded",
+        "A button computes the integral using scipy or sympy",
+        "The numeric area value is displayed with units",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-014",
+      "epic": "E7: State Control & Reset",
+      "title": "Erase and restart",
+      "description": "As a user, I want to erase everything and restart so that I can begin a new experiment.",
+      "acceptanceCriteria": [
+        "A clearly visible 'Erase & Restart' button exists",
+        "All points, curves, and statistics are removed",
+        "The chart returns to its initial empty state",
+        "No page reload is required",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-015",
+      "epic": "E8: UI/UX & Visual Design",
+      "title": "World-class UI design",
+      "description": "As a user, I want a world-class UI so that the experience feels modern, playful, and premium.",
+      "acceptanceCriteria": [
+        "Design blends modern product aesthetics with exploratory playfulness",
+        "Color palette uses deep neutrals, vibrant greens for success, and soft gradients",
+        "Typography is clean, math-friendly, and hierarchy is clear",
+        "Animations are bold, smooth, and purposeful",
+        "UI quality matches top-tier tools like Linear, Vercel, or Desmos",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": "This story should be addressed incrementally across all UI work, with a final polish pass."
+    }
+  ]
+}
