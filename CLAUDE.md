@@ -9,6 +9,149 @@ Interactive Curve Fitting Lab - A local-first web app that enables advanced math
 - **Curve Fitting**: scikit-learn, scipy, numpy, sympy, statsmodels
 - **Fonts**: Geist Sans & Geist Mono
 
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              USER INTERFACE                                  │
+│                           http://localhost:3000                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌─────────────────────────────────┐    ┌─────────────────────────────────┐ │
+│  │         CHART AREA              │    │           SIDEBAR               │ │
+│  │   ┌─────────────────────────┐   │    │                                 │ │
+│  │   │                         │   │    │  ┌───────────────────────────┐  │ │
+│  │   │    CartesianChart.tsx   │   │    │  │  Input Mode               │  │ │
+│  │   │    ─────────────────    │   │    │  │  • Paint Points toggle    │  │ │
+│  │   │    • D3.js rendering    │   │    │  │  • CSV Upload             │  │ │
+│  │   │    • Zoom/Pan           │   │    │  └───────────────────────────┘  │ │
+│  │   │    • Point plotting     │   │    │                                 │ │
+│  │   │    • Curve display      │   │    │  ┌───────────────────────────┐  │ │
+│  │   │    • Integral shading   │   │    │  │  Curve Fitting            │  │ │
+│  │   │    • Extrema markers    │   │    │  │  • Objective selector     │  │ │
+│  │   │                         │   │    │  │  • Estimate Function btn  │  │ │
+│  │   └─────────────────────────┘   │    │  └───────────────────────────┘  │ │
+│  │                                 │    │                                 │ │
+│  │   x: [-10, 10] | y: [-10, 10]   │    │  ┌───────────────────────────┐  │ │
+│  └─────────────────────────────────┘    │  │  Results                  │  │ │
+│                                         │  │  • Function expression    │  │ │
+│                                         │  │  • R², RMSE, MAE stats    │  │ │
+│                                         │  │  • Quality badge          │  │ │
+│                                         │  └───────────────────────────┘  │ │
+│                                         │                                 │ │
+│                                         │  ┌───────────────────────────┐  │ │
+│                                         │  │  Analysis                 │  │ │
+│                                         │  │  • Derivatives & Extrema  │  │ │
+│                                         │  │  • Area Under Curve       │  │ │
+│                                         │  └───────────────────────────┘  │ │
+│                                         │                                 │ │
+│                                         │  [Erase & Restart]              │ │
+│                                         └─────────────────────────────────┘ │
+│                                                                              │
+└──────────────────────────────────┬──────────────────────────────────────────┘
+                                   │
+                                   │ HTTP/JSON
+                                   │
+┌──────────────────────────────────▼──────────────────────────────────────────┐
+│                           FRONTEND (Next.js)                                 │
+│                                                                              │
+│  page.tsx ─────────────────────────────────────────────────────────────────  │
+│  │                                                                           │
+│  ├── State Management (React hooks)                                          │
+│  │   • points: Point[]           • fittingObjective: 'accuracy'|...         │
+│  │   • fittedCurve: FittedCurve  • isFitting: boolean                       │
+│  │   • fitResult: FitResult      • analyticalProps: AnalyticalProperties    │
+│  │                                                                           │
+│  ├── Event Handlers                                                          │
+│  │   • handlePointAdd()          • handleEstimateFunction()                  │
+│  │   • handleCSVUpload()         • handleComputeAnalytical()                 │
+│  │   • handleReset()             • handleStartIntegral()                     │
+│  │                                                                           │
+│  └── Fallback: simulateFit() ──► Linear regression when backend unavailable │
+│                                                                              │
+└──────────────────────────────────┬──────────────────────────────────────────┘
+                                   │
+                                   │ fetch() to localhost:8000
+                                   │
+┌──────────────────────────────────▼──────────────────────────────────────────┐
+│                           BACKEND (FastAPI)                                  │
+│                          http://localhost:8000                               │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │                           API ENDPOINTS                                 │ │
+│  ├────────────────────────────────────────────────────────────────────────┤ │
+│  │  POST /fit                                                              │ │
+│  │  ├── Input: {points: [{x,y}], objective}                                │ │
+│  │  ├── Process: Fit multiple models, score by objective, select best     │ │
+│  │  └── Output: {expression, statistics, quality, curvePoints, heuristics}│ │
+│  ├────────────────────────────────────────────────────────────────────────┤ │
+│  │  POST /analyze                                                          │ │
+│  │  ├── Input: {expression}                                                │ │
+│  │  ├── Process: Sympy differentiation, solve for extrema, find asymptotes│ │
+│  │  └── Output: {firstDerivative, secondDerivative, extrema, asymptotes}  │ │
+│  ├────────────────────────────────────────────────────────────────────────┤ │
+│  │  POST /integrate                                                        │ │
+│  │  ├── Input: {expression, a, b}                                          │ │
+│  │  ├── Process: Symbolic or numerical integration                         │ │
+│  │  └── Output: {value, expression}                                        │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │                         MODEL FITTING ENGINE                            │ │
+│  ├────────────────────────────────────────────────────────────────────────┤ │
+│  │                                                                         │ │
+│  │   ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐      │ │
+│  │   │   Linear    │ │ Polynomial  │ │ Exponential │ │ Logarithmic │      │ │
+│  │   │  (sklearn)  │ │  (deg 2-4)  │ │   y=ae^bx   │ │  y=a·ln(x)  │      │ │
+│  │   └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘      │ │
+│  │                                                                         │ │
+│  │   ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐      │ │
+│  │   │    Power    │ │  Rational   │ │   Spline    │ │ Sinusoidal  │      │ │
+│  │   │   y=ax^b    │ │ (ax+b)/(cx+d)│ │   (scipy)   │ │ A·sin(Bx+C) │      │ │
+│  │   └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘      │ │
+│  │                                                                         │ │
+│  │   Scoring: accuracy → R²  |  interpretability → R² - 0.1·complexity    │ │
+│  │                           |  balanced → R² - 0.05·complexity            │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  Libraries: numpy, scipy, scikit-learn, sympy, statsmodels                   │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Data Flow
+
+```
+User Action                    Frontend                         Backend
+───────────                    ────────                         ───────
+Paint point ──────────────────► Add to points[]
+                                Re-render chart
+
+Upload CSV ───────────────────► Parse & validate
+                                Downsample if > 50k
+                                Add to points[]
+
+Click "Estimate Function" ────► POST /fit ─────────────────────► Fit all models
+                                Show progress UI                  Score & rank
+                                                                  Return best
+                              ◄─────────────────────────────────
+                                Display curve
+                                Show statistics
+
+Click "Derivatives" ──────────► POST /analyze ─────────────────► Sympy diff()
+                                                                  Solve extrema
+                              ◄─────────────────────────────────
+                                Display results
+                                Mark on chart
+
+Select integral range ────────► Calculate area (frontend)
+                                Shade region
+                                Display result
+
+Click "Erase & Restart" ──────► Clear all state
+                                Reset chart
+```
+
 ## Project Structure
 ```
 math-functions/
