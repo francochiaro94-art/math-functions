@@ -237,10 +237,15 @@ def fit_exponential(x: np.ndarray, y: np.ndarray) -> tuple[str, np.ndarray, dict
 
         expr = f"y = {a:.4g} * exp({b:.4g}x) {c_sign} {c_val:.4g}"
 
+        # Create evaluation function for CV
+        def eval_func(x_new):
+            return exponential_func(x_new, a, b, c)
+
         return expr, y_pred, {
             'type': 'Exponential',
             'complexity': 3,
-            'params': {'a': a, 'b': b, 'c': c}
+            'params': {'a': a, 'b': b, 'c': c},
+            'eval_func': eval_func
         }
     except Exception:
         raise ValueError("Exponential fit failed")
@@ -472,11 +477,16 @@ def fit_reciprocal_shifted(x: np.ndarray, y: np.ndarray) -> tuple[str, np.ndarra
 
         expr = f"y = {a:.4g}/(x {c_sign} {c_val:.4g}) {d_sign} {d_val:.4g}"
 
+        # Create evaluation function for CV
+        def eval_func(x_new):
+            return reciprocal_safe(x_new, a, c, d)
+
         return expr, y_pred, {
             'type': 'Reciprocal',
             'complexity': 3,
             'asymptote_x': c,
-            'params': {'a': a, 'c': c, 'd': d}
+            'params': {'a': a, 'c': c, 'd': d},
+            'eval_func': eval_func
         }
     except Exception:
         raise ValueError("Reciprocal fit failed")
@@ -563,12 +573,23 @@ def compute_validation_score(x: np.ndarray, y: np.ndarray, fit_func, n_folds: in
         x_val, y_val = x[val_indices], y[val_indices]
 
         try:
-            _, y_pred_train, _ = fit_func(x_train, y_train)
-            # Interpolate predictions for validation set
-            from scipy.interpolate import interp1d
-            interp_func = interp1d(x_train, y_pred_train, kind='linear',
-                                   fill_value='extrapolate', bounds_error=False)
-            y_pred_val = interp_func(x_val)
+            _, y_pred_train, info = fit_func(x_train, y_train)
+
+            # Use evaluation function if available (for proper nonlinear model evaluation)
+            if 'eval_func' in info and info['eval_func'] is not None:
+                y_pred_val = info['eval_func'](x_val)
+            else:
+                # Fallback to cubic interpolation for smoother curves
+                from scipy.interpolate import interp1d
+                # Sort by x for proper interpolation
+                sort_idx = np.argsort(x_train)
+                x_sorted = x_train[sort_idx]
+                y_sorted = y_pred_train[sort_idx]
+                # Use cubic interpolation when possible, linear as fallback
+                kind = 'cubic' if len(x_train) >= 4 else 'linear'
+                interp_func = interp1d(x_sorted, y_sorted, kind=kind,
+                                       fill_value='extrapolate', bounds_error=False)
+                y_pred_val = interp_func(x_val)
 
             # Filter valid predictions
             valid_mask = np.isfinite(y_pred_val)
