@@ -140,33 +140,110 @@ def fit_polynomial(x: np.ndarray, y: np.ndarray, degree: int = 2) -> tuple[str, 
 
 
 def fit_exponential(x: np.ndarray, y: np.ndarray) -> tuple[str, np.ndarray, dict]:
-    """Fit an exponential model: y = a * e^(bx)"""
+    """Fit an exponential model: y = a * exp(b*x) + c
+
+    This is the improved 3-parameter exponential with:
+    - Vertical shift parameter c
+    - Robust initial guesses using multiple c seeds
+    - Overflow protection via safe_exp
+    - NaN for overflow values
+    """
+    MAX_EXP_ARG = 700  # Avoid overflow (exp(700) ~ 1e304)
+
+    def safe_exp(arg):
+        """Compute exp with overflow protection, returns NaN for overflow"""
+        with np.errstate(over='ignore'):
+            result = np.where(
+                np.abs(arg) > MAX_EXP_ARG,
+                np.nan,
+                np.exp(np.clip(arg, -MAX_EXP_ARG, MAX_EXP_ARG))
+            )
+        return result
+
+    def exponential_func(x, a, b, c):
+        """Exponential function with overflow protection"""
+        return a * safe_exp(b * x) + c
+
     try:
-        # Only fit if all y values are positive
-        if np.any(y <= 0):
-            # Shift data if needed
-            y_shift = y - y.min() + 1
-        else:
-            y_shift = y
+        # Try multiple c candidates (vertical shift seeds)
+        y_min = np.min(y)
+        y_max = np.max(y)
+        y_mean = np.mean(y)
+        y_p10 = np.percentile(y, 10)
+        y_p90 = np.percentile(y, 90)
 
-        # Log transform for linear fit
-        log_y = np.log(y_shift)
-        model = LinearRegression()
-        model.fit(x.reshape(-1, 1), log_y)
+        # Candidate c values: below min(y), at percentiles, and 0
+        c_candidates = [
+            y_min - abs(y_max - y_min) * 0.1,  # Below minimum
+            y_min - 1,
+            y_p10 - 1,
+            0,
+            y_mean,
+        ]
 
-        b = model.coef_[0]
-        a = np.exp(model.intercept_)
+        best_result = None
+        best_residual = float('inf')
 
-        y_pred = a * np.exp(b * x)
+        for c_init in c_candidates:
+            try:
+                # Estimate a and b using log transform on (y - c)
+                y_shifted = y - c_init
+                valid_mask = y_shifted > 0
+                if np.sum(valid_mask) < 3:
+                    continue
 
-        # Adjust if we shifted
-        if np.any(y <= 0):
-            y_pred = y_pred + y.min() - 1
+                x_valid = x[valid_mask]
+                y_valid = y_shifted[valid_mask]
 
-        expr = f"y = {a:.6g} * e^({b:.6g}x)"
-        return expr, y_pred, {'type': 'Exponential', 'complexity': 2}
+                # Linear regression on log(y - c) vs x
+                log_y = np.log(y_valid)
+                model = LinearRegression()
+                model.fit(x_valid.reshape(-1, 1), log_y)
+
+                b_init = model.coef_[0]
+                a_init = np.exp(model.intercept_)
+
+                # Refine with nonlinear least squares
+                popt, _ = optimize.curve_fit(
+                    exponential_func,
+                    x, y,
+                    p0=[a_init, b_init, c_init],
+                    maxfev=5000,
+                    bounds=([-np.inf, -np.inf, -np.inf], [np.inf, np.inf, np.inf])
+                )
+
+                # Calculate residual
+                y_pred_test = exponential_func(x, *popt)
+                valid_pred = np.isfinite(y_pred_test)
+                if np.sum(valid_pred) > len(x) * 0.5:  # At least 50% valid
+                    residual = np.sum((y[valid_pred] - y_pred_test[valid_pred]) ** 2)
+                    if residual < best_residual:
+                        best_residual = residual
+                        best_result = popt
+            except Exception:
+                continue
+
+        if best_result is None:
+            raise ValueError("Exponential fit failed for all c candidates")
+
+        a, b, c = best_result
+
+        # Generate predictions with overflow protection
+        y_pred = exponential_func(x, a, b, c)
+
+        # Build expression string
+        c_sign = "+" if c >= 0 else "-"
+        c_val = abs(c)
+
+        expr = f"y = {a:.4g} * exp({b:.4g}x) {c_sign} {c_val:.4g}"
+
+        return expr, y_pred, {
+            'type': 'Exponential',
+            'complexity': 3,
+            'params': {'a': a, 'b': b, 'c': c}
+        }
     except Exception:
-        return fit_linear(x, y)
+        raise ValueError("Exponential fit failed")
 
 
 def fit_logarithmic(x: np.ndarray, y: np.ndarray) -> tuple[str, np.ndarray, dict]:

@@ -66,8 +66,8 @@
         "Backend tests pass for exponential fitting"
       ],
       "priority": 18,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Implemented safe_exp with MAX_EXP_ARG=700 overflow protection; NaN returned for overflow"
     },
     {
       "id": "US-019",
@@ -83,8 +83,8 @@
         "Typecheck passes"
       ],
       "priority": 19,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Multi-seed c candidates including percentiles; log transform seeding for a,b; nonlinear refinement with curve_fit"
     },
     {
       "id": "US-020",
