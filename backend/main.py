@@ -707,6 +707,33 @@ def fit_curve(request: FitRequest):
     )
 
 
+def preprocess_expression(expr_str: str) -> str:
+    """Preprocess expression string for sympy parsing"""
+    import re
+
+    # Remove "y = " prefix
+    expr_str = expr_str.replace('y = ', '').replace('y=', '')
+
+    # Replace ^ with ** (but do this AFTER handling other patterns)
+    # We'll do this last to avoid conflicts
+
+    # Replace ln with log (sympy uses log for natural log)
+    expr_str = expr_str.replace('ln', 'log')
+
+    # Fix coefficient before x outside of functions (e.g., "0.5x" -> "0.5*x", "2x" -> "2*x")
+    # Be careful not to add * inside function calls
+    expr_str = re.sub(r'(\d+\.?\d*)x(?!\w)', r'\1*x', expr_str)
+
+    # Fix patterns like exp(0.5x) -> exp(0.5*x)
+    # This handles the case inside exp()
+    expr_str = re.sub(r'exp\((-?\d+\.?\d*)x\)', r'exp(\1*x)', expr_str)
+
+    # Now replace ^ with **
+    expr_str = expr_str.replace('^', '**')
+
+    return expr_str
+
+
 @app.post("/analyze", response_model=AnalyticalProperties)
 def analyze_function(request: AnalyzeRequest):
     """Compute analytical properties of a function"""
@@ -714,10 +741,7 @@ def analyze_function(request: AnalyzeRequest):
         x = sp.Symbol('x')
 
         # Parse the expression (handle common formats)
-        expr_str = request.expression
-        expr_str = expr_str.replace('y = ', '').replace('y=', '')
-        expr_str = expr_str.replace('^', '**')
-        expr_str = expr_str.replace('ln', 'log')
+        expr_str = preprocess_expression(request.expression)
 
         # Handle special cases
         if 'Spline' in expr_str or 'spline' in expr_str:
@@ -764,7 +788,14 @@ def analyze_function(request: AnalyzeRequest):
                 asymptotes.append(Asymptote(type='horizontal', value=float(limit_neg)))
 
             # Vertical asymptotes (where denominator = 0)
-            # This is simplified; would need more robust handling
+            # Convert to single fraction and find zeros of denominator
+            together = sp.together(expr)
+            _, denom = sp.fraction(together)
+            if denom != 1:
+                vert_asymp = sp.solve(denom, x)
+                for va in vert_asymp:
+                    if va.is_real:
+                        asymptotes.append(Asymptote(type='vertical', value=float(va)))
         except Exception:
             pass
 
@@ -784,16 +815,33 @@ def compute_integral(request: IntegralRequest):
     try:
         x = sp.Symbol('x')
 
-        expr_str = request.expression
-        expr_str = expr_str.replace('y = ', '').replace('y=', '')
-        expr_str = expr_str.replace('^', '**')
-        expr_str = expr_str.replace('ln', 'log')
+        expr_str = preprocess_expression(request.expression)
 
         # For splines, use numerical integration
         if 'Spline' in expr_str:
             raise HTTPException(status_code=400, detail="Cannot integrate spline symbolically")
 
         expr = parse_expr(expr_str)
+
+        # Check for vertical asymptotes within integration bounds
+        a, b = min(request.a, request.b), max(request.a, request.b)
+        try:
+            together = sp.together(expr)
+            _, denom = sp.fraction(together)
+            if denom != 1:
+                vert_asymp = sp.solve(denom, x)
+                for va in vert_asymp:
+                    if va.is_real:
+                        va_float = float(va)
+                        if a < va_float < b:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Integral undefined (bounds cross vertical asymptote at x = {va_float:.4g})"
+                            )
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # Continue even if asymptote check fails
 
         # Try symbolic integration first
         try:
@@ -808,7 +856,7 @@ def compute_integral(request: IntegralRequest):
 
         return IntegralResult(
             value=value,
-            expression=f"∫[{request.a}, {request.b}] {expr_str} dx = {integral_expr}"
+            expression=f"∫[{request.a}, {request.b}] {request.expression.replace('y = ', '')} dx = {integral_expr}"
         )
     except HTTPException:
         raise

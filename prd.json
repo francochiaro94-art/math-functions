@@ -147,8 +147,8 @@
         "Verify in browser: analysis works for exponential"
       ],
       "priority": 23,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Added preprocess_expression to fix coefficient*x patterns; sympy computes correct derivatives and integrals"
     },
     {
       "id": "US-024",
@@ -162,8 +162,8 @@
         "Verify in browser: analysis works for reciprocal"
       ],
       "priority": 24,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Vertical asymptote detection via sp.together/sp.fraction; integrate endpoint checks bounds vs asymptotes"
     },
     {
       "id": "US-025",
