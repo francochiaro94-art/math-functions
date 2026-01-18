@@ -24,6 +24,7 @@ interface ParameterEditorProps {
   onApply: (params: Record<string, number>) => void;
   onCancel: () => void;
   onPreview: (params: Record<string, number>) => void;
+  onDraftChange?: (hasChanges: boolean) => void;
   isLoading?: boolean;
   error?: string | null;
 }
@@ -33,6 +34,7 @@ export function ParameterEditor({
   onApply,
   onCancel,
   onPreview,
+  onDraftChange,
   isLoading,
   error,
 }: ParameterEditorProps) {
@@ -56,6 +58,11 @@ export function ParameterEditor({
     setIsDirty(false);
     setValidationErrors({});
   }, [schema]);
+
+  // Notify parent when draft changes
+  useEffect(() => {
+    onDraftChange?.(isDirty);
+  }, [isDirty, onDraftChange]);
 
   // Validate a single parameter
   const validateParam = useCallback((param: ModelParameter, value: number): string | null => {

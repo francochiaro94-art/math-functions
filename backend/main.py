@@ -110,14 +110,15 @@ class CandidateSearchEngine:
         self.config = {**self.DEFAULT_CONFIG, **(config or {})}
         self.trace: SearchTrace | None = None
 
-    def search(self, x: np.ndarray, y: np.ndarray, objective: str = 'accuracy') -> tuple[CandidateResult, SearchTrace]:
+    def search(self, x: np.ndarray, y: np.ndarray, objective: str = 'accuracy', forced_family: str | None = None) -> tuple[CandidateResult, SearchTrace]:
         """
-        Run multi-start candidate search across all model families.
+        Run multi-start candidate search across all model families, or fit a single forced family.
 
         Args:
             x: Input values
             y: Output values
             objective: 'accuracy', 'interpretability', or 'balanced'
+            forced_family: If provided, only fit this model family (e.g., 'poly2', 'sinusoidal')
 
         Returns:
             Tuple of (best_candidate, search_trace)
@@ -133,6 +134,12 @@ class CandidateSearchEngine:
 
         # Define all model families with their fitters and seed generators
         families = self._get_model_families(x, y, objective)
+
+        # If forced_family is specified, only keep that family
+        if forced_family:
+            if forced_family not in families:
+                raise ValueError(f"Model family '{forced_family}' is not available for this data. Available families: {list(families.keys())}")
+            families = {forced_family: families[forced_family]}
 
         # Track best score for early exit
         best_global_score = float('inf')
@@ -1200,6 +1207,7 @@ class Point(BaseModel):
 class FitRequest(BaseModel):
     points: list[Point]
     objective: Literal['accuracy', 'interpretability', 'balanced'] = 'accuracy'
+    selectedModel: Optional[str] = 'auto'  # 'auto' or a model family ID
 
 
 class FitStatistics(BaseModel):
@@ -1235,6 +1243,7 @@ class FitResult(BaseModel):
     modelType: str
     heuristics: list[str]
     parameterSchema: Optional[ModelParameterSchema] = None
+    mode: Literal['auto', 'forced'] = 'auto'  # Whether the model was auto-selected or forced
 
 
 class AnalyzeRequest(BaseModel):
@@ -1285,6 +1294,18 @@ class EvaluateResult(BaseModel):
     curvePoints: list[Point]
     valid: bool
     error: Optional[str] = None
+
+
+class ModelInfo(BaseModel):
+    modelId: str
+    displayName: str
+    parameterCount: int
+    supportsEditing: bool = True
+    domain: Optional[str] = None  # e.g., "x > 0" for log/sqrt
+
+
+class ModelsResponse(BaseModel):
+    models: list[ModelInfo]
 
 
 # ============================================================================
@@ -2201,6 +2222,43 @@ def health():
     return {"status": "healthy"}
 
 
+@app.get("/models", response_model=ModelsResponse)
+def get_models():
+    """Return list of available model families for fitting"""
+    models = [
+        ModelInfo(modelId="linear", displayName="Linear", parameterCount=2),
+        ModelInfo(modelId="poly2", displayName="Polynomial (degree 2)", parameterCount=3),
+        ModelInfo(modelId="poly3", displayName="Polynomial (degree 3)", parameterCount=4),
+        ModelInfo(modelId="poly4", displayName="Polynomial (degree 4)", parameterCount=5),
+        ModelInfo(modelId="exponential", displayName="Exponential", parameterCount=3),
+        ModelInfo(modelId="logarithmic", displayName="Logarithmic", parameterCount=2, domain="x > 0"),
+        ModelInfo(modelId="log_shifted", displayName="Logarithmic (Shifted)", parameterCount=3, domain="x > c"),
+        ModelInfo(modelId="sqrt_shifted", displayName="Square Root", parameterCount=3, domain="x ≥ c"),
+        ModelInfo(modelId="power", displayName="Power", parameterCount=2, domain="x > 0"),
+        ModelInfo(modelId="sinusoidal", displayName="Sinusoidal", parameterCount=4),
+        ModelInfo(modelId="reciprocal", displayName="Reciprocal", parameterCount=3),
+        ModelInfo(modelId="rational", displayName="Rational", parameterCount=4),
+    ]
+    return ModelsResponse(models=models)
+
+
+# Mapping from modelId to internal family name and model type
+MODEL_ID_TO_FAMILY = {
+    'linear': ('poly1', 'Linear'),
+    'poly2': ('poly2', 'Polynomial (degree 2)'),
+    'poly3': ('poly3', 'Polynomial (degree 3)'),
+    'poly4': ('poly4', 'Polynomial (degree 4)'),
+    'exponential': ('exponential', 'Exponential'),
+    'logarithmic': ('logarithmic', 'Logarithmic'),
+    'log_shifted': ('log_shifted', 'Logarithmic (Shifted)'),
+    'sqrt_shifted': ('sqrt_shifted', 'Square Root'),
+    'power': ('power', 'Power'),
+    'sinusoidal': ('sinusoidal', 'Sinusoidal'),
+    'reciprocal': ('reciprocal', 'Reciprocal'),
+    'rational': ('rational', 'Rational'),
+}
+
+
 def compute_validation_score(x: np.ndarray, y: np.ndarray, fit_func, n_folds: int = 5) -> float:
     """Compute k-fold cross-validation score for generalization assessment"""
     n = len(x)
@@ -2272,11 +2330,23 @@ def fit_curve(request: FitRequest):
     x = np.array([p.x for p in request.points])
     y = np.array([p.y for p in request.points])
 
+    # Determine if we're using auto or forced mode
+    selected_model = request.selectedModel or 'auto'
+    is_forced = selected_model.lower() != 'auto'
+    forced_family = None
+    forced_model_type = None
+
+    if is_forced:
+        # Map the modelId to the internal family name
+        if selected_model not in MODEL_ID_TO_FAMILY:
+            raise HTTPException(status_code=400, detail=f"Unknown model: {selected_model}")
+        forced_family, forced_model_type = MODEL_ID_TO_FAMILY[selected_model]
+
     # Use the CandidateSearchEngine for multi-start model selection
     engine = CandidateSearchEngine()
 
     try:
-        best_candidate, trace = engine.search(x, y, request.objective)
+        best_candidate, trace = engine.search(x, y, request.objective, forced_family=forced_family)
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -2354,7 +2424,8 @@ def fit_curve(request: FitRequest):
     ]
 
     # Get model type from info or family name
-    model_type = best_candidate.info.get('type', best_candidate.family.title())
+    # Use forced_model_type if we're in forced mode
+    model_type = forced_model_type if is_forced and forced_model_type else best_candidate.info.get('type', best_candidate.family.title())
 
     # Get parameters from info and generate schema
     params = best_candidate.info.get('params', {})
@@ -2397,7 +2468,8 @@ def fit_curve(request: FitRequest):
         curvePoints=curve_points,
         modelType=model_type,
         heuristics=heuristics,
-        parameterSchema=parameter_schema
+        parameterSchema=parameter_schema,
+        mode='forced' if is_forced else 'auto'
     )
 
 

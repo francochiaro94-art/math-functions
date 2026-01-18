@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { CartesianChart } from '@/components/CartesianChart';
 import { LatexRenderer, expressionToLatex, derivativeToLatex, integralToLatex } from '@/components/LatexRenderer';
 import { Tooltip, metricTooltips } from '@/components/Tooltip';
 import { CollapsibleCard } from '@/components/CollapsibleCard';
 import { ParameterEditor } from '@/components/ParameterEditor';
-import type { Point, FittedCurve, FittingObjective, FitResult, AnalyticalProperties, IntegralResult, ModelParameterSchema } from '@/types/chart';
+import type { Point, FittedCurve, FittingObjective, FitResult, AnalyticalProperties, IntegralResult, ModelInfo } from '@/types/chart';
 
 const MAX_POINTS = 50000;
 
@@ -43,8 +43,34 @@ export default function Home() {
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
 
+  // Model selection state
+  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>('auto');
+  const [isLoadingModels, setIsLoadingModels] = useState(true);
+  const [showModelSwitchConfirm, setShowModelSwitchConfirm] = useState(false);
+  const [pendingModelSwitch, setPendingModelSwitch] = useState<string | null>(null);
+  const [hasDraftEdits, setHasDraftEdits] = useState(false);
+
   // File input ref
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Fetch available models on mount
+  useEffect(() => {
+    const fetchModels = async () => {
+      try {
+        const response = await fetch('http://localhost:8000/models');
+        if (response.ok) {
+          const data = await response.json();
+          setAvailableModels(data.models);
+        }
+      } catch {
+        console.warn('Could not fetch models, using default behavior');
+      } finally {
+        setIsLoadingModels(false);
+      }
+    };
+    fetchModels();
+  }, []);
 
   // Add point handler
   const handlePointAdd = useCallback((point: Point) => {
@@ -136,6 +162,7 @@ export default function Home() {
         body: JSON.stringify({
           points: points.map(p => ({ x: p.x, y: p.y })),
           objective: fittingObjective,
+          selectedModel: selectedModel,
         }),
       });
 
@@ -164,7 +191,7 @@ export default function Home() {
         setIsFitting(false);
       }, 500);
     }
-  }, [points, fittingObjective]);
+  }, [points, fittingObjective, selectedModel]);
 
   // Simulated fit for demo when backend is unavailable
   const simulateFit = useCallback(() => {
@@ -382,6 +409,78 @@ export default function Home() {
     }
   }, [fitResult, points]);
 
+  // Handle model switch in edit mode
+  const handleModelSwitch = useCallback(async (newModel: string) => {
+    if (points.length < 2) return;
+
+    setIsEvaluating(true);
+    setEditError(null);
+    setShowModelSwitchConfirm(false);
+    setPendingModelSwitch(null);
+
+    try {
+      const response = await fetch('http://localhost:8000/fit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          points: points.map(p => ({ x: p.x, y: p.y })),
+          objective: fittingObjective,
+          selectedModel: newModel,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Fitting failed');
+      }
+
+      const result: FitResult = await response.json();
+
+      setFitResult(result);
+      setOriginalFitResult(result);
+      setSelectedModel(newModel);
+      setFittedCurve({
+        points: result.curvePoints,
+        expression: result.expression,
+        color: '#22c55e',
+      });
+      setHasDraftEdits(false);
+
+      // Clear analysis since model changed
+      setAnalyticalProps(null);
+      setIntegralResult(null);
+      setEditError(null);
+    } catch {
+      setEditError('Failed to switch model');
+    } finally {
+      setIsEvaluating(false);
+    }
+  }, [points, fittingObjective]);
+
+  const handleModelSwitchRequest = useCallback((newModel: string) => {
+    if (hasDraftEdits) {
+      setPendingModelSwitch(newModel);
+      setShowModelSwitchConfirm(true);
+    } else {
+      handleModelSwitch(newModel);
+    }
+  }, [hasDraftEdits, handleModelSwitch]);
+
+  const handleConfirmModelSwitch = useCallback(() => {
+    if (pendingModelSwitch) {
+      handleModelSwitch(pendingModelSwitch);
+    }
+  }, [pendingModelSwitch, handleModelSwitch]);
+
+  const handleCancelModelSwitch = useCallback(() => {
+    setShowModelSwitchConfirm(false);
+    setPendingModelSwitch(null);
+  }, []);
+
+  // Track draft edits
+  const handleDraftChange = useCallback((hasChanges: boolean) => {
+    setHasDraftEdits(hasChanges);
+  }, []);
+
   // Start integral selection
   const handleStartIntegral = useCallback(() => {
     setMode('selecting-integral');
@@ -439,6 +538,10 @@ export default function Home() {
     setIsEditMode(false);
     setOriginalFitResult(null);
     setEditError(null);
+    setSelectedModel('auto');
+    setHasDraftEdits(false);
+    setShowModelSwitchConfirm(false);
+    setPendingModelSwitch(null);
   }, []);
 
   const isPaintingMode = mode === 'painting';
@@ -526,6 +629,24 @@ export default function Home() {
               </h2>
 
               <div className="space-y-3">
+                <div>
+                  <label className="block text-xs text-zinc-500 mb-1.5">Model</label>
+                  <select
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                    disabled={isLoadingModels}
+                    className="w-full px-3 py-2 text-sm rounded-lg bg-zinc-100 dark:bg-zinc-800 border-0 focus:ring-2 focus:ring-green-500 disabled:opacity-50"
+                  >
+                    <option value="auto">Auto (best fit)</option>
+                    {availableModels.map((model) => (
+                      <option key={model.modelId} value={model.modelId}>
+                        {model.displayName}
+                        {model.domain && ` (${model.domain})`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 <div>
                   <label className="block text-xs text-zinc-500 mb-1.5">Objective</label>
                   <select
@@ -630,12 +751,32 @@ export default function Home() {
 
                       {/* Show ParameterEditor when in edit mode, otherwise show expression */}
                       {isEditMode && fitResult.parameterSchema ? (
-                        <div className="mt-2">
+                        <div className="mt-2 space-y-3">
+                          {/* Model selector in edit mode */}
+                          <div>
+                            <label className="block text-xs text-zinc-500 mb-1.5">Model</label>
+                            <select
+                              value={selectedModel}
+                              onChange={(e) => handleModelSwitchRequest(e.target.value)}
+                              disabled={isEvaluating || isLoadingModels}
+                              className="w-full px-3 py-2 text-sm rounded-lg bg-zinc-100 dark:bg-zinc-800 border-0 focus:ring-2 focus:ring-green-500 disabled:opacity-50"
+                            >
+                              <option value="auto">Auto (best fit)</option>
+                              {availableModels.map((model) => (
+                                <option key={model.modelId} value={model.modelId}>
+                                  {model.displayName}
+                                  {model.domain && ` (${model.domain})`}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
                           <ParameterEditor
                             schema={fitResult.parameterSchema}
                             onApply={handleApplyParams}
                             onCancel={handleCancelEdit}
                             onPreview={handlePreviewParams}
+                            onDraftChange={handleDraftChange}
                             isLoading={isEvaluating}
                             error={editError}
                           />
@@ -658,6 +799,11 @@ export default function Home() {
                       }`}>
                         {fitResult.quality}
                       </span>
+                      {fitResult.mode === 'forced' && (
+                        <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400">
+                          Forced model
+                        </span>
+                      )}
                       {fitResult.modelType === 'Reciprocal' && (
                         <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400">
                           asymptote in view
@@ -873,6 +1019,34 @@ export default function Home() {
           </span>
         </div>
       </footer>
+
+      {/* Model switch confirmation dialog */}
+      {showModelSwitchConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 animate-fade-in">
+          <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl p-6 max-w-sm mx-4 animate-slide-in">
+            <h3 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100 mb-2">
+              Switch model?
+            </h3>
+            <p className="text-sm text-zinc-600 dark:text-zinc-400 mb-6">
+              Switching models will discard unsaved parameter edits and refit the curve.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={handleCancelModelSwitch}
+                className="px-4 py-2 text-sm font-medium rounded-lg border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmModelSwitch}
+                className="px-4 py-2 text-sm font-medium rounded-lg bg-indigo-500 text-white hover:bg-indigo-600 transition-colors"
+              >
+                Switch model
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

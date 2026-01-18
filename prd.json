@@ -398,6 +398,63 @@
       "priority": 40,
       "passes": true,
       "notes": "Cancel restores originalFitResult; Reset in ParameterEditor reverts to schema.parameters values; Apply updates both fitResult and originalFitResult as new baseline"
+    },
+    {
+      "id": "MODELSEL-001",
+      "epic": "E17: Model Pre-Selection",
+      "title": "Default Auto selection",
+      "description": "As a user, I want the model selector to be set to Auto by default so that the app behaves as it currently does unless I choose otherwise.",
+      "acceptanceCriteria": [
+        "On initial load, model selector value is 'Auto'",
+        "In Auto, clicking 'Estimate Function' uses the current auto-selection pipeline",
+        "All outputs (equation, plot, metrics, trace) match existing behavior in Auto mode"
+      ],
+      "priority": 41,
+      "passes": true,
+      "notes": "Model selector defaults to 'auto'; selectedModel='auto' in fit request triggers full multi-model search"
+    },
+    {
+      "id": "MODELSEL-002",
+      "epic": "E17: Model Pre-Selection",
+      "title": "Dropdown lists models from backend",
+      "description": "As a user, I want to pick a specific model from a dropdown so that I can force that family for the fitting process.",
+      "acceptanceCriteria": [
+        "Dropdown options include 'Auto' plus all models returned by the backend",
+        "Model options are displayed using human-friendly names",
+        "If backend model list changes, UI reflects it without code changes"
+      ],
+      "priority": 42,
+      "passes": true,
+      "notes": "GET /models endpoint returns 12 model families; UI fetches on mount and caches; models displayed with domain hints"
+    },
+    {
+      "id": "MODELSEL-003",
+      "epic": "E17: Model Pre-Selection",
+      "title": "Forced model fitting",
+      "description": "As a user, I want the app to fit using the model I selected even if it isn't best so that I can intentionally explore or compare models.",
+      "acceptanceCriteria": [
+        "If a user selects a model (not Auto), the fitting request uses only that model family",
+        "The resulting Model label matches the user selection",
+        "No automatic model selection overrides or replaces the user-selected model"
+      ],
+      "priority": 43,
+      "passes": true,
+      "notes": "selectedModel in FitRequest maps to forced_family in CandidateSearchEngine.search(); FitResult.mode='forced' badge shown"
+    },
+    {
+      "id": "MODELSEL-004",
+      "epic": "E17: Model Pre-Selection",
+      "title": "Model selection in edit flow",
+      "description": "As a user, I want to switch the model while editing the generated function so that changing the model recomputes the fit and updates parameters accordingly.",
+      "acceptanceCriteria": [
+        "When in function edit mode, a Model selector is available with the same options",
+        "Changing the selected model triggers a full re-fit for that model using the current dataset",
+        "After re-fit, parameter editor fields update to match the selected model schema",
+        "Edited parameters from previous model do not carry over incorrectly"
+      ],
+      "priority": 44,
+      "passes": true,
+      "notes": "Model dropdown in edit mode; confirmation dialog when switching with unsaved edits; full refit clears draft params"
     }
   ]
 }

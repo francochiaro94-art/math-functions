@@ -64,6 +64,15 @@ export interface FitResult {
   curvePoints: Point[];
   modelType: string;
   parameterSchema?: ModelParameterSchema;
+  mode?: 'auto' | 'forced';
+}
+
+export interface ModelInfo {
+  modelId: string;
+  displayName: string;
+  parameterCount: number;
+  supportsEditing: boolean;
+  domain?: string;
 }
 
 export interface AnalyticalProperties {
