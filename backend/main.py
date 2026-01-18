@@ -12,7 +12,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Model fitting imports
 from scipy import optimize, integrate
-from scipy.interpolate import UnivariateSpline
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.pipeline import make_pipeline
@@ -337,34 +336,6 @@ def fit_rational(x: np.ndarray, y: np.ndarray) -> tuple[str, np.ndarray, dict]:
         return fit_linear(x, y)
 
 
-def fit_spline(x: np.ndarray, y: np.ndarray) -> tuple[str, np.ndarray, dict]:
-    """Fit a smoothing spline"""
-    try:
-        # Sort by x
-        sort_idx = np.argsort(x)
-        x_sorted = x[sort_idx]
-        y_sorted = y[sort_idx]
-
-        # Remove duplicates
-        _, unique_idx = np.unique(x_sorted, return_index=True)
-        x_unique = x_sorted[unique_idx]
-        y_unique = y_sorted[unique_idx]
-
-        if len(x_unique) < 4:
-            return fit_linear(x, y)
-
-        spline = UnivariateSpline(x_unique, y_unique, s=len(x_unique) * 0.1)
-        y_pred = spline(x)
-
-        def eval_func(x_new):
-            return spline(x_new)
-
-        expr = "y = Spline(x)"
-        return expr, y_pred, {'type': 'Smoothing Spline', 'complexity': 5, 'eval_func': eval_func}
-    except Exception:
-        return fit_linear(x, y)
-
-
 def fit_sinusoidal(x: np.ndarray, y: np.ndarray) -> tuple[str, np.ndarray, dict]:
     """Fit a sinusoidal model: y = A * sin(Bx + C) + D"""
     try:
@@ -661,7 +632,6 @@ def fit_curve(request: FitRequest):
     # Only add poly4 for accuracy objective, but with validation scoring
     if request.objective == 'accuracy':
         models.append(('poly4', lambda x, y: fit_polynomial(x, y, 4), 4))
-        models.append(('spline', fit_spline, 5))
         models.append(('rational', fit_rational, 4))
 
     # Fit all models and collect results
@@ -812,15 +782,6 @@ def analyze_function(request: AnalyzeRequest):
         # Parse the expression (handle common formats)
         expr_str = preprocess_expression(request.expression)
 
-        # Handle special cases
-        if 'Spline' in expr_str or 'spline' in expr_str:
-            return AnalyticalProperties(
-                firstDerivative="Spline derivative (numerical)",
-                secondDerivative="Spline second derivative (numerical)",
-                extrema=[],
-                asymptotes=[]
-            )
-
         expr = parse_expr(expr_str)
 
         # Compute derivatives
@@ -885,10 +846,6 @@ def compute_integral(request: IntegralRequest):
         x = sp.Symbol('x')
 
         expr_str = preprocess_expression(request.expression)
-
-        # For splines, use numerical integration
-        if 'Spline' in expr_str:
-            raise HTTPException(status_code=400, detail="Cannot integrate spline symbolically")
 
         expr = parse_expr(expr_str)
 
