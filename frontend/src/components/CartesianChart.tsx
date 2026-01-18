@@ -24,6 +24,14 @@ const DEFAULT_BOUNDS: ChartBounds = {
   yMax: 10,
 };
 
+// Zoom constraints
+const MIN_RANGE = 0.1;
+const MAX_RANGE = 1e6;
+const ZOOM_SENSITIVITY = 0.002;
+const PAN_THRESHOLD = 4; // pixels before committing to pan
+
+type InteractionState = 'idle' | 'panning' | 'painting' | 'potentialPan';
+
 export function CartesianChart({
   points,
   fittedCurve,
@@ -38,10 +46,29 @@ export function CartesianChart({
   const [bounds, setBounds] = useState<ChartBounds>(DEFAULT_BOUNDS);
   const [hoveredPoint, setHoveredPoint] = useState<Point | null>(null);
 
+  // Interaction state
+  const [interactionState, setInteractionState] = useState<InteractionState>('idle');
+  const [isSpacePressed, setIsSpacePressed] = useState(false);
+  const panStartRef = useRef<{ screenX: number; screenY: number; bounds: ChartBounds } | null>(null);
+  const rafRef = useRef<number | null>(null);
+
   const innerWidth = dimensions.width - dimensions.margin.left - dimensions.margin.right;
   const innerHeight = dimensions.height - dimensions.margin.top - dimensions.margin.bottom;
 
-  // Create scales
+  // Coordinate conversion helpers
+  const screenToWorld = useCallback((screenX: number, screenY: number) => {
+    const x = bounds.xMin + (screenX / innerWidth) * (bounds.xMax - bounds.xMin);
+    const y = bounds.yMax - (screenY / innerHeight) * (bounds.yMax - bounds.yMin);
+    return { x, y };
+  }, [bounds, innerWidth, innerHeight]);
+
+  const worldToScreen = useCallback((worldX: number, worldY: number) => {
+    const screenX = ((worldX - bounds.xMin) / (bounds.xMax - bounds.xMin)) * innerWidth;
+    const screenY = ((bounds.yMax - worldY) / (bounds.yMax - bounds.yMin)) * innerHeight;
+    return { screenX, screenY };
+  }, [bounds, innerWidth, innerHeight]);
+
+  // Create scales for D3
   const xScale = useCallback(() => {
     return d3.scaleLinear()
       .domain([bounds.xMin, bounds.xMax])
@@ -53,6 +80,265 @@ export function CartesianChart({
       .domain([bounds.yMin, bounds.yMax])
       .range([innerHeight, 0]);
   }, [bounds.yMin, bounds.yMax, innerHeight]);
+
+  // Clamp viewport to limits
+  const clampBounds = useCallback((newBounds: ChartBounds): ChartBounds => {
+    let { xMin, xMax, yMin, yMax } = newBounds;
+
+    // Enforce minimum range
+    const xRange = xMax - xMin;
+    const yRange = yMax - yMin;
+
+    if (xRange < MIN_RANGE) {
+      const mid = (xMin + xMax) / 2;
+      xMin = mid - MIN_RANGE / 2;
+      xMax = mid + MIN_RANGE / 2;
+    }
+    if (yRange < MIN_RANGE) {
+      const mid = (yMin + yMax) / 2;
+      yMin = mid - MIN_RANGE / 2;
+      yMax = mid + MIN_RANGE / 2;
+    }
+
+    // Enforce maximum range
+    if (xRange > MAX_RANGE) {
+      const mid = (xMin + xMax) / 2;
+      xMin = mid - MAX_RANGE / 2;
+      xMax = mid + MAX_RANGE / 2;
+    }
+    if (yRange > MAX_RANGE) {
+      const mid = (yMin + yMax) / 2;
+      yMin = mid - MAX_RANGE / 2;
+      yMax = mid + MAX_RANGE / 2;
+    }
+
+    return { xMin, xMax, yMin, yMax };
+  }, []);
+
+  // Cursor-anchored zoom
+  const applyZoom = useCallback((zoomFactor: number, anchorScreenX: number, anchorScreenY: number) => {
+    setBounds(prevBounds => {
+      // Get world coordinate under cursor before zoom
+      const xRange = prevBounds.xMax - prevBounds.xMin;
+      const yRange = prevBounds.yMax - prevBounds.yMin;
+      const worldX = prevBounds.xMin + (anchorScreenX / innerWidth) * xRange;
+      const worldY = prevBounds.yMax - (anchorScreenY / innerHeight) * yRange;
+
+      // Apply zoom factor
+      const newXRange = xRange / zoomFactor;
+      const newYRange = yRange / zoomFactor;
+
+      // Recompute bounds so world point stays under cursor
+      const ratioX = anchorScreenX / innerWidth;
+      const ratioY = anchorScreenY / innerHeight;
+
+      const newXMin = worldX - ratioX * newXRange;
+      const newXMax = worldX + (1 - ratioX) * newXRange;
+      const newYMax = worldY + ratioY * newYRange;
+      const newYMin = worldY - (1 - ratioY) * newYRange;
+
+      return clampBounds({ xMin: newXMin, xMax: newXMax, yMin: newYMin, yMax: newYMax });
+    });
+  }, [innerWidth, innerHeight, clampBounds]);
+
+  // Pan by screen delta
+  const applyPan = useCallback((deltaScreenX: number, deltaScreenY: number) => {
+    setBounds(prevBounds => {
+      const xRange = prevBounds.xMax - prevBounds.xMin;
+      const yRange = prevBounds.yMax - prevBounds.yMin;
+
+      const deltaWorldX = (deltaScreenX / innerWidth) * xRange;
+      const deltaWorldY = (deltaScreenY / innerHeight) * yRange;
+
+      return clampBounds({
+        xMin: prevBounds.xMin - deltaWorldX,
+        xMax: prevBounds.xMax - deltaWorldX,
+        yMin: prevBounds.yMin + deltaWorldY,
+        yMax: prevBounds.yMax + deltaWorldY,
+      });
+    });
+  }, [innerWidth, innerHeight, clampBounds]);
+
+  // Reset view
+  const resetView = useCallback(() => {
+    setBounds(DEFAULT_BOUNDS);
+  }, []);
+
+  // Handle wheel/pinch zoom
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+
+      const rect = svg.getBoundingClientRect();
+      const screenX = event.clientX - rect.left - dimensions.margin.left;
+      const screenY = event.clientY - rect.top - dimensions.margin.top;
+
+      // Check if pointer is within chart area
+      if (screenX < 0 || screenX > innerWidth || screenY < 0 || screenY > innerHeight) {
+        return;
+      }
+
+      // Pinch zoom (trackpad) vs scroll
+      if (event.ctrlKey || event.metaKey) {
+        // Pinch zoom - deltaY is zoom amount
+        const zoomFactor = Math.pow(2, -event.deltaY * ZOOM_SENSITIVITY * 10);
+
+        if (rafRef.current) cancelAnimationFrame(rafRef.current);
+        rafRef.current = requestAnimationFrame(() => {
+          applyZoom(zoomFactor, screenX, screenY);
+        });
+      } else {
+        // Mouse wheel zoom or trackpad two-finger scroll
+        // Detect if it's a trackpad scroll (usually has both deltaX and deltaY, and smaller values)
+        const isTrackpadScroll = Math.abs(event.deltaX) > 0 || (Math.abs(event.deltaY) < 50 && !Number.isInteger(event.deltaY));
+
+        if (isTrackpadScroll) {
+          // Two-finger scroll = pan
+          if (rafRef.current) cancelAnimationFrame(rafRef.current);
+          rafRef.current = requestAnimationFrame(() => {
+            applyPan(event.deltaX, event.deltaY);
+          });
+        } else {
+          // Mouse wheel = zoom
+          const zoomFactor = Math.pow(2, -event.deltaY * ZOOM_SENSITIVITY);
+
+          if (rafRef.current) cancelAnimationFrame(rafRef.current);
+          rafRef.current = requestAnimationFrame(() => {
+            applyZoom(zoomFactor, screenX, screenY);
+          });
+        }
+      }
+    };
+
+    svg.addEventListener('wheel', handleWheel, { passive: false });
+
+    return () => {
+      svg.removeEventListener('wheel', handleWheel);
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, [applyZoom, applyPan, dimensions.margin, innerWidth, innerHeight]);
+
+  // Handle keyboard for space key (pan modifier)
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.code === 'Space' && !event.repeat) {
+        event.preventDefault();
+        setIsSpacePressed(true);
+      }
+    };
+
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.code === 'Space') {
+        setIsSpacePressed(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, []);
+
+  // Handle mouse down for pan/paint
+  const handleMouseDown = useCallback((event: React.MouseEvent<SVGSVGElement>) => {
+    if (event.button !== 0) return; // Only left click
+
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const screenX = event.clientX - rect.left - dimensions.margin.left;
+    const screenY = event.clientY - rect.top - dimensions.margin.top;
+
+    // Check if within chart area
+    if (screenX < 0 || screenX > innerWidth || screenY < 0 || screenY > innerHeight) {
+      return;
+    }
+
+    // If space is pressed, always pan
+    if (isSpacePressed) {
+      setInteractionState('panning');
+      panStartRef.current = { screenX: event.clientX, screenY: event.clientY, bounds };
+      return;
+    }
+
+    // If painting mode is off, pan directly
+    if (!isPaintingMode) {
+      setInteractionState('potentialPan');
+      panStartRef.current = { screenX: event.clientX, screenY: event.clientY, bounds };
+      return;
+    }
+
+    // In painting mode, wait to see if it's a click or drag
+    setInteractionState('potentialPan');
+    panStartRef.current = { screenX: event.clientX, screenY: event.clientY, bounds };
+  }, [isPaintingMode, isSpacePressed, bounds, dimensions.margin, innerWidth, innerHeight]);
+
+  // Handle mouse move for pan
+  const handleMouseMove = useCallback((event: React.MouseEvent<SVGSVGElement>) => {
+    if (!panStartRef.current) return;
+
+    const deltaX = event.clientX - panStartRef.current.screenX;
+    const deltaY = event.clientY - panStartRef.current.screenY;
+    const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+
+    if (interactionState === 'potentialPan' && distance > PAN_THRESHOLD) {
+      setInteractionState('panning');
+    }
+
+    if (interactionState === 'panning') {
+      const startBounds = panStartRef.current.bounds;
+      const xRange = startBounds.xMax - startBounds.xMin;
+      const yRange = startBounds.yMax - startBounds.yMin;
+
+      const deltaWorldX = (deltaX / innerWidth) * xRange;
+      const deltaWorldY = (deltaY / innerHeight) * yRange;
+
+      setBounds(clampBounds({
+        xMin: startBounds.xMin - deltaWorldX,
+        xMax: startBounds.xMax - deltaWorldX,
+        yMin: startBounds.yMin + deltaWorldY,
+        yMax: startBounds.yMax + deltaWorldY,
+      }));
+    }
+  }, [interactionState, innerWidth, innerHeight, clampBounds]);
+
+  // Handle mouse up
+  const handleMouseUp = useCallback((event: React.MouseEvent<SVGSVGElement>) => {
+    const wasInteractionState = interactionState;
+
+    // If we were in potentialPan and didn't exceed threshold, it's a click
+    if (wasInteractionState === 'potentialPan' && isPaintingMode && onPointAdd) {
+      const rect = svgRef.current?.getBoundingClientRect();
+      if (rect) {
+        const screenX = event.clientX - rect.left - dimensions.margin.left;
+        const screenY = event.clientY - rect.top - dimensions.margin.top;
+
+        if (screenX >= 0 && screenX <= innerWidth && screenY >= 0 && screenY <= innerHeight) {
+          const world = screenToWorld(screenX, screenY);
+          onPointAdd({
+            x: world.x,
+            y: world.y,
+            id: crypto.randomUUID(),
+          });
+        }
+      }
+    }
+
+    setInteractionState('idle');
+    panStartRef.current = null;
+  }, [interactionState, isPaintingMode, onPointAdd, screenToWorld, dimensions.margin, innerWidth, innerHeight]);
+
+  // Handle mouse leave
+  const handleMouseLeave = useCallback(() => {
+    setInteractionState('idle');
+    panStartRef.current = null;
+  }, []);
 
   // Calculate appropriate tick count based on zoom level
   const getTickCount = useCallback((range: number) => {
@@ -394,64 +680,13 @@ export function CartesianChart({
 
   }, [dimensions, bounds, points, fittedCurve, integralRange, analyticalMarkers, xScale, yScale, innerWidth, innerHeight, getTickCount]);
 
-  // Handle zoom and pan
-  useEffect(() => {
-    if (!svgRef.current) return;
-
-    const svg = d3.select(svgRef.current);
-
-    const zoom = d3.zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.1, 100])
-      .on('zoom', (event) => {
-        const transform = event.transform;
-        const x = xScale();
-        const y = yScale();
-
-        const newXMin = x.invert(-transform.x / transform.k);
-        const newXMax = x.invert((innerWidth - transform.x) / transform.k);
-        const newYMin = y.invert((innerHeight - transform.y) / transform.k);
-        const newYMax = y.invert(-transform.y / transform.k);
-
-        setBounds({
-          xMin: newXMin,
-          xMax: newXMax,
-          yMin: newYMin,
-          yMax: newYMax,
-        });
-      });
-
-    svg.call(zoom);
-
-    return () => {
-      svg.on('.zoom', null);
-    };
-  }, [innerWidth, innerHeight, xScale, yScale]);
-
-  // Handle click for painting mode
-  const handleClick = useCallback((event: React.MouseEvent<SVGSVGElement>) => {
-    if (!isPaintingMode || !onPointAdd) return;
-
-    const svg = svgRef.current;
-    if (!svg) return;
-
-    const rect = svg.getBoundingClientRect();
-    const x = xScale();
-    const y = yScale();
-
-    const clickX = event.clientX - rect.left - dimensions.margin.left;
-    const clickY = event.clientY - rect.top - dimensions.margin.top;
-
-    if (clickX >= 0 && clickX <= innerWidth && clickY >= 0 && clickY <= innerHeight) {
-      const dataX = x.invert(clickX);
-      const dataY = y.invert(clickY);
-
-      onPointAdd({
-        x: dataX,
-        y: dataY,
-        id: crypto.randomUUID(),
-      });
-    }
-  }, [isPaintingMode, onPointAdd, xScale, yScale, dimensions.margin, innerWidth, innerHeight]);
+  // Determine cursor style
+  const getCursorClass = () => {
+    if (interactionState === 'panning') return 'cursor-grabbing';
+    if (isSpacePressed) return 'cursor-grab';
+    if (isPaintingMode) return 'cursor-crosshair';
+    return 'cursor-grab';
+  };
 
   return (
     <div
@@ -462,13 +697,52 @@ export function CartesianChart({
         ref={svgRef}
         width={dimensions.width}
         height={dimensions.height}
-        onClick={handleClick}
-        className={`${isPaintingMode ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'}`}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseLeave}
+        className={getCursorClass()}
       />
+
+      {/* Zoom controls */}
+      <div className="absolute top-4 left-4 flex flex-col gap-1">
+        <button
+          onClick={() => applyZoom(1.5, innerWidth / 2, innerHeight / 2)}
+          className="w-8 h-8 flex items-center justify-center bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg shadow-sm hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors"
+          title="Zoom in"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
+        </button>
+        <button
+          onClick={() => applyZoom(0.67, innerWidth / 2, innerHeight / 2)}
+          className="w-8 h-8 flex items-center justify-center bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg shadow-sm hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors"
+          title="Zoom out"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H4" />
+          </svg>
+        </button>
+        <button
+          onClick={resetView}
+          className="w-8 h-8 flex items-center justify-center bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg shadow-sm hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors"
+          title="Reset view"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Interaction hint */}
+      <div className="absolute top-4 right-4 text-[10px] text-zinc-400 dark:text-zinc-500 bg-white/80 dark:bg-zinc-800/80 px-2 py-1 rounded backdrop-blur-sm">
+        Scroll to zoom {isPaintingMode ? '• Space+drag to pan' : '• Drag to pan'}
+      </div>
 
       {/* Hover tooltip */}
       {hoveredPoint && (
-        <div className="absolute top-4 right-4 bg-zinc-800/90 dark:bg-zinc-100/90 text-white dark:text-zinc-900 px-3 py-2 rounded-lg text-sm font-mono shadow-lg backdrop-blur-sm">
+        <div className="absolute top-12 right-4 bg-zinc-800/90 dark:bg-zinc-100/90 text-white dark:text-zinc-900 px-3 py-2 rounded-lg text-sm font-mono shadow-lg backdrop-blur-sm">
           ({hoveredPoint.x.toFixed(4)}, {hoveredPoint.y.toFixed(4)})
         </div>
       )}

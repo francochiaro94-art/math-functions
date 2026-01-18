@@ -178,6 +178,65 @@
       "priority": 25,
       "passes": true,
       "notes": "Orange badge shown when modelType='Reciprocal'; exponential overflow handled silently via safe_exp returning NaN"
+    },
+    {
+      "id": "US-026",
+      "epic": "E13: Chart Zoom & Pan Polish",
+      "title": "Cursor-centered zoom",
+      "description": "As a user, I want zoom to be centered on where my cursor is pointing so that I can zoom into the exact region I care about without re-panning.",
+      "acceptanceCriteria": [
+        "Mouse wheel zoom keeps the world coordinate under the cursor stationary (cursor-anchored zoom)",
+        "Zoom works smoothly in continuous steps without jumping",
+        "Zoom clamped to min/max range to prevent infinite zoom"
+      ],
+      "priority": 26,
+      "passes": true,
+      "notes": "Implemented applyZoom with cursor-anchored algorithm; clampBounds enforces MIN_RANGE=0.1 and MAX_RANGE=1e6"
+    },
+    {
+      "id": "US-027",
+      "epic": "E13: Chart Zoom & Pan Polish",
+      "title": "Smooth pan without fighting point interactions",
+      "description": "As a user, I want dragging to pan to feel smooth and not interfere with point placement/selection.",
+      "acceptanceCriteria": [
+        "Click-drag pans the viewport when in navigation mode",
+        "Space key enables pan mode even when painting mode is active",
+        "Pan uses movement threshold (4px) before committing to prevent accidental triggers",
+        "Dragging a point and panning are never triggered at the same time"
+      ],
+      "priority": 27,
+      "passes": true,
+      "notes": "Implemented interaction state machine with 'idle', 'panning', 'potentialPan' states; Space key modifier for pan in paint mode"
+    },
+    {
+      "id": "US-028",
+      "epic": "E13: Chart Zoom & Pan Polish",
+      "title": "Trackpad gestures feel native",
+      "description": "As a trackpad user, I want pinch zoom and two-finger pan to work naturally so the chart feels like modern map/canvas apps.",
+      "acceptanceCriteria": [
+        "Pinch zoom (ctrlKey) zooms around the pinch center",
+        "Two-finger scroll pans the viewport when pointer is over the chart",
+        "No conflict between scrolling the sidebar and interacting with the chart",
+        "Updates throttled with requestAnimationFrame for smooth performance"
+      ],
+      "priority": 28,
+      "passes": true,
+      "notes": "Detects trackpad vs mouse wheel via deltaX presence and non-integer deltaY; pinch uses ctrlKey/metaKey; rAF throttling"
+    },
+    {
+      "id": "US-029",
+      "epic": "E13: Chart Zoom & Pan Polish",
+      "title": "Fast reset and clear feedback",
+      "description": "As a user, I want an easy way to reset zoom and understand the current scale so I don't get lost.",
+      "acceptanceCriteria": [
+        "A 'Reset View' button restores the default viewport (x:[-10,10], y:[-10,10])",
+        "Zoom in/out buttons work and match wheel/pinch behavior",
+        "Current viewport bounds are always displayed and update as user pans/zooms",
+        "Interaction hints show contextual help (Scroll to zoom, Drag to pan, Space+drag)"
+      ],
+      "priority": 29,
+      "passes": true,
+      "notes": "Added +, -, Reset buttons in top-left; viewport bounds shown in bottom-left; interaction hints in top-right"
     }
   ]
 }
