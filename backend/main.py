@@ -731,10 +731,17 @@ def fit_curve(request: FitRequest):
     best = max(results, key=lambda r: r['score'])
 
     # Generate curve points for visualization (dense sampling for smooth curves)
-    x_min, x_max = x.min(), x.max()
-    x_range = x_max - x_min
-    N_SAMPLES = 800  # Dense sampling for smooth visualization
-    x_curve = np.linspace(x_min - 0.1 * x_range, x_max + 0.1 * x_range, N_SAMPLES)
+    # Extend well beyond data range to show extrapolation in the viewport
+    x_data_min, x_data_max = x.min(), x.max()
+    x_data_range = x_data_max - x_data_min
+
+    # Extend to cover typical viewport (-10 to 10) or 3x the data range, whichever is larger
+    x_extend = max(x_data_range * 2, 15)  # At least 15 units beyond data on each side
+    x_curve_min = min(x_data_min - x_extend, -20)
+    x_curve_max = max(x_data_max + x_extend, 20)
+
+    N_SAMPLES = 1000  # Dense sampling for smooth visualization across extended range
+    x_curve = np.linspace(x_curve_min, x_curve_max, N_SAMPLES)
 
     # Use eval_func if available for proper curve evaluation (not interpolation)
     if 'eval_func' in best['info'] and best['info']['eval_func'] is not None:
