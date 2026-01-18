@@ -37,18 +37,36 @@ function roundToSignificant(num: number, sigFigs: number = 2): string {
 }
 
 /**
- * Format a coefficient for display, handling special cases
+ * Format a power model to proper LaTeX: y = a * x^{b}
+ * Handles special cases like a=1, b=0, negative exponents, etc.
  */
-function formatCoefficient(coef: number, isFirst: boolean = false): string {
-  const rounded = roundToSignificant(coef, 2);
-  const num = parseFloat(rounded);
+export function formatPowerModelLatex(a: number, b: number): string {
+  // Handle invalid inputs
+  if (!Number.isFinite(a) || !Number.isFinite(b)) {
+    return 'Unable to render function (invalid parameters)';
+  }
 
-  if (num === 0) return '';
-  if (num === 1 && !isFirst) return '+';
-  if (num === -1) return '-';
-  if (num > 0 && !isFirst) return `+ ${rounded}`;
-  if (num < 0) return `- ${Math.abs(num)}`;
-  return rounded;
+  const aRounded = roundToSignificant(a, 3);
+
+  // Special case: b = 0, function is a constant
+  if (b === 0) {
+    return aRounded;
+  }
+
+  const bRounded = roundToSignificant(b, 3);
+
+  // Special case: a = 1, omit coefficient
+  if (Math.abs(a - 1) < 1e-10) {
+    return `x^{${bRounded}}`;
+  }
+
+  // Special case: a = -1
+  if (Math.abs(a + 1) < 1e-10) {
+    return `-x^{${bRounded}}`;
+  }
+
+  // General case: a * x^{b}
+  return `${aRounded} \\cdot x^{${bRounded}}`;
 }
 
 /**
@@ -108,8 +126,15 @@ export function expressionToLatex(expr: string): string {
     return `\\frac{${num}}{${denom}}`;
   });
 
-  // Handle polynomial exponents: x^2 -> x^{2}
+  // Handle polynomial exponents: x^2 -> x^{2} (integers only, if not already braced)
   latex = latex.replace(/\^(\d+)(?!\})/g, '^{$1}');
+
+  // Handle power model exponents with decimal/negative values: x^-0.92 -> x^{-0.92}
+  // This catches any unbraced exponents (including negative and decimal)
+  latex = latex.replace(/\^(-?\d+\.?\d*)(?!\})/g, '^{$1}');
+
+  // Clean up any double braces that might have been created: x^{{b}} -> x^{b}
+  latex = latex.replace(/\^\{\{([^}]+)\}\}/g, '^{$1}');
 
   // Convert * to \cdot (middle dot) - only single asterisks now
   latex = latex.replace(/\s*\*\s*/g, ' \\cdot ');

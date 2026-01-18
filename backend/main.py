@@ -1040,8 +1040,15 @@ def fit_power_basic(x: np.ndarray, y: np.ndarray):
         x_arr = np.atleast_1d(x_new)
         return np.where(x_arr > 0, a_coef * np.power(x_arr, b_exp), np.nan)
 
-    expr = f"y = {a_coef:.6g} * x^{b_exp:.6g}"
-    return expr, y_pred, {'type': 'Power', 'complexity': 2, 'eval_func': eval_func}
+    # Generate expression with proper formatting for LaTeX
+    # Use braces around exponent for proper rendering: x^{b}
+    expr = f"y = {a_coef:.6g} * x^{{{b_exp:.6g}}}"
+    return expr, y_pred, {
+        'type': 'Power',
+        'complexity': 2,
+        'eval_func': eval_func,
+        'params': {'a': a_coef, 'b': b_exp}
+    }
 
 
 def fit_sinusoidal_with_seed(x: np.ndarray, y: np.ndarray, seed: dict):
@@ -1513,7 +1520,8 @@ def evaluate_with_params(model_family: str, params: dict, x: np.ndarray) -> tupl
         elif model_family == 'Power':
             a, b = params.get('a', 1), params.get('b', 1)
             y = np.where(x > 0, a * np.power(x, b), np.nan)
-            expr = f"y = {a:.4g} * x^{b:.4g}"
+            # Use braces around exponent for proper LaTeX rendering
+            expr = f"y = {a:.4g} * x^{{{b:.4g}}}"
             return y, expr, True, ''
 
         elif model_family == 'Sinusoidal':
@@ -1749,8 +1757,14 @@ def fit_power(x: np.ndarray, y: np.ndarray) -> tuple[str, np.ndarray, dict]:
             result = np.where(x_arr > 0, a_coef * np.power(x_arr, b_exp), np.nan)
             return result
 
-        expr = f"y = {a_coef:.6g} * x^{b_exp:.6g}"
-        return expr, y_pred, {'type': 'Power', 'complexity': 2, 'eval_func': eval_func}
+        # Generate expression with proper formatting for LaTeX
+        expr = f"y = {a_coef:.6g} * x^{{{b_exp:.6g}}}"
+        return expr, y_pred, {
+            'type': 'Power',
+            'complexity': 2,
+            'eval_func': eval_func,
+            'params': {'a': a_coef, 'b': b_exp}
+        }
     except Exception:
         return fit_linear(x, y)
 
