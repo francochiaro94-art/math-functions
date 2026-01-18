@@ -449,64 +449,65 @@ export default function Home() {
                   Result
                 </h2>
 
-                <div className="p-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-lg space-y-3">
-                  <div>
-                    <span className="text-xs text-zinc-500">Model</span>
-                    <p className="text-sm font-medium">{fitResult.modelType}</p>
-                  </div>
+                <CollapsibleCard
+                  title={fitResult.modelType}
+                  subtitle={`R² = ${fitResult.statistics.r2.toFixed(4)}`}
+                  defaultOpen={true}
+                >
+                  <div className="space-y-3">
+                    <div>
+                      <span className="text-xs text-zinc-500">Function</span>
+                      <div className="text-sm py-1 overflow-x-auto">
+                        <LatexRenderer latex={`y = ${expressionToLatex(fitResult.expression)}`} />
+                      </div>
+                    </div>
 
-                  <div>
-                    <span className="text-xs text-zinc-500">Function</span>
-                    <div className="text-sm py-1 overflow-x-auto">
-                      <LatexRenderer latex={`y = ${expressionToLatex(fitResult.expression)}`} />
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs text-zinc-500">Quality</span>
+                      <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${
+                        fitResult.quality === 'good'
+                          ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                          : fitResult.quality === 'regular'
+                          ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
+                          : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                      }`}>
+                        {fitResult.quality}
+                      </span>
+                      {fitResult.modelType === 'Reciprocal' && (
+                        <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400">
+                          asymptote in view
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <Tooltip content={metricTooltips.r2} position="top">
+                        <div className="p-2 bg-white dark:bg-zinc-800 rounded cursor-help hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors">
+                          <span className="text-[10px] text-zinc-500 block">R²</span>
+                          <span className="text-sm font-mono font-semibold">
+                            {fitResult.statistics.r2.toFixed(4)}
+                          </span>
+                        </div>
+                      </Tooltip>
+                      <Tooltip content={metricTooltips.rmse} position="top">
+                        <div className="p-2 bg-white dark:bg-zinc-800 rounded cursor-help hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors">
+                          <span className="text-[10px] text-zinc-500 block">RMSE</span>
+                          <span className="text-sm font-mono font-semibold">
+                            {fitResult.statistics.rmse.toFixed(4)}
+                          </span>
+                        </div>
+                      </Tooltip>
+                      <Tooltip content={metricTooltips.mae} position="top">
+                        <div className="p-2 bg-white dark:bg-zinc-800 rounded cursor-help hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors">
+                          <span className="text-[10px] text-zinc-500 block">MAE</span>
+                          <span className="text-sm font-mono font-semibold">
+                            {fitResult.statistics.mae.toFixed(4)}
+                          </span>
+                        </div>
+                      </Tooltip>
                     </div>
                   </div>
-
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs text-zinc-500">Quality</span>
-                    <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${
-                      fitResult.quality === 'good'
-                        ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                        : fitResult.quality === 'regular'
-                        ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
-                        : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
-                    }`}>
-                      {fitResult.quality}
-                    </span>
-                    {fitResult.modelType === 'Reciprocal' && (
-                      <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400">
-                        asymptote in view
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <Tooltip content={metricTooltips.r2} position="top">
-                      <div className="p-2 bg-white dark:bg-zinc-800 rounded cursor-help hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors">
-                        <span className="text-[10px] text-zinc-500 block">R²</span>
-                        <span className="text-sm font-mono font-semibold">
-                          {fitResult.statistics.r2.toFixed(4)}
-                        </span>
-                      </div>
-                    </Tooltip>
-                    <Tooltip content={metricTooltips.rmse} position="top">
-                      <div className="p-2 bg-white dark:bg-zinc-800 rounded cursor-help hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors">
-                        <span className="text-[10px] text-zinc-500 block">RMSE</span>
-                        <span className="text-sm font-mono font-semibold">
-                          {fitResult.statistics.rmse.toFixed(4)}
-                        </span>
-                      </div>
-                    </Tooltip>
-                    <Tooltip content={metricTooltips.mae} position="top">
-                      <div className="p-2 bg-white dark:bg-zinc-800 rounded cursor-help hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors">
-                        <span className="text-[10px] text-zinc-500 block">MAE</span>
-                        <span className="text-sm font-mono font-semibold">
-                          {fitResult.statistics.mae.toFixed(4)}
-                        </span>
-                      </div>
-                    </Tooltip>
-                  </div>
-                </div>
+                </CollapsibleCard>
               </section>
             )}
 
