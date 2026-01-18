@@ -267,7 +267,7 @@ export default function Home() {
         setIntegralResult({
           pointA: integralRange.a,
           pointB: point,
-          area: Math.abs(area),
+          area: area,  // Keep sign: negative below y=0, positive above
           expression: `∫[${aX.toFixed(2)}, ${bX.toFixed(2)}] f(x) dx`,
         });
       }
