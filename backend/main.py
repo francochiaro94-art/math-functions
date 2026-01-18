@@ -19,8 +19,1161 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import sympy as sp
 from sympy.parsing.sympy_parser import parse_expr
 import warnings
+import time
+from dataclasses import dataclass, field
+from typing import Callable, Any
 
 warnings.filterwarnings('ignore')
+
+
+# ============================================================================
+# CANDIDATE SEARCH ENGINE - Multi-Start Model Selection
+# ============================================================================
+
+@dataclass
+class CandidateResult:
+    """Result from fitting a single candidate seed"""
+    family: str
+    seed_id: int
+    params: dict
+    expression: str
+    cv_rmse: float
+    cv_mae: float
+    cv_r2: float
+    train_rmse: float
+    train_r2: float
+    n_params: int
+    coverage: float
+    eval_func: Callable | None = None
+    y_pred: np.ndarray | None = None
+    info: dict = field(default_factory=dict)
+    status: str = 'valid'  # 'valid', 'rejected', 'failed'
+    rejection_reason: str = ''
+
+
+@dataclass
+class FamilyResult:
+    """Best result for a model family"""
+    family: str
+    best_candidate: CandidateResult | None
+    seeds_tried: int
+    seeds_valid: int
+    final_score: float
+    status: str  # 'selected', 'rejected', 'skipped', 'failed'
+    rejection_reason: str = ''
+    top_candidates: list[CandidateResult] = field(default_factory=list)
+
+
+@dataclass
+class SearchTrace:
+    """Trace of the entire search process"""
+    families: list[FamilyResult]
+    selected_family: str
+    total_seeds: int
+    total_time_ms: float
+    early_exit: bool = False
+    early_exit_reason: str = ''
+
+
+class CandidateSearchEngine:
+    """
+    Multi-start candidate search engine for fair, reliable model selection.
+
+    Tries multiple parameter seeds per model family and selects using
+    generalization-based scoring (CV/holdout) with complexity regularization.
+    """
+
+    # Default configuration
+    DEFAULT_CONFIG = {
+        'max_poly_degree': 4,  # Cap at 4 to prevent overfitting
+        'min_valid_coverage': 0.9,
+        'cv_folds': 3,  # 3-fold CV for speed (5 for large datasets handled adaptively)
+        'holdout_repeats': 3,
+        'lambda_complexity': 0.25,
+        'max_total_seeds': 60,
+        'max_total_ms': 3000,  # 3 seconds max for good UX
+        'max_iters_per_seed': 50,
+        'early_exit_threshold': 0.001,  # If RMSE < this, consider early exit
+        'seed_counts': {
+            'sinusoidal': 12,  # Reduced for speed while maintaining coverage
+            'exponential': 6,
+            'logarithmic': 6,
+            'log_shifted': 6,
+            'reciprocal': 6,
+            'sqrt': 4,
+            'power': 4,
+            'rational': 4,
+        }
+    }
+
+    def __init__(self, config: dict | None = None):
+        self.config = {**self.DEFAULT_CONFIG, **(config or {})}
+        self.trace: SearchTrace | None = None
+
+    def search(self, x: np.ndarray, y: np.ndarray, objective: str = 'accuracy') -> tuple[CandidateResult, SearchTrace]:
+        """
+        Run multi-start candidate search across all model families.
+
+        Args:
+            x: Input values
+            y: Output values
+            objective: 'accuracy', 'interpretability', or 'balanced'
+
+        Returns:
+            Tuple of (best_candidate, search_trace)
+        """
+        start_time = time.time()
+        n = len(x)
+
+        # Determine scoring strategy based on N
+        use_cv = n >= 25
+
+        family_results: list[FamilyResult] = []
+        total_seeds = 0
+
+        # Define all model families with their fitters and seed generators
+        families = self._get_model_families(x, y, objective)
+
+        # Track best score for early exit
+        best_global_score = float('inf')
+        early_exit = False
+        early_exit_reason = ''
+
+        for family_name, family_config in families.items():
+            # Check time budget
+            elapsed_ms = (time.time() - start_time) * 1000
+            if elapsed_ms > self.config['max_total_ms']:
+                family_results.append(FamilyResult(
+                    family=family_name,
+                    best_candidate=None,
+                    seeds_tried=0,
+                    seeds_valid=0,
+                    final_score=float('inf'),
+                    status='skipped',
+                    rejection_reason='time budget exceeded'
+                ))
+                continue
+
+            # Check seed budget
+            if total_seeds >= self.config['max_total_seeds']:
+                family_results.append(FamilyResult(
+                    family=family_name,
+                    best_candidate=None,
+                    seeds_tried=0,
+                    seeds_valid=0,
+                    final_score=float('inf'),
+                    status='skipped',
+                    rejection_reason='seed budget exceeded'
+                ))
+                continue
+
+            # Run multi-start for this family
+            result = self._fit_family(
+                family_name, family_config, x, y,
+                use_cv=use_cv, objective=objective
+            )
+
+            total_seeds += result.seeds_tried
+            family_results.append(result)
+
+            # Check for early exit (very good fit found)
+            if result.best_candidate and result.final_score < best_global_score:
+                best_global_score = result.final_score
+
+                # Early exit if we found an excellent fit
+                if best_global_score < self.config['early_exit_threshold']:
+                    early_exit = True
+                    early_exit_reason = f"Excellent fit found (score={best_global_score:.6f})"
+                    break
+
+        # Select the winning family
+        valid_families = [f for f in family_results if f.best_candidate is not None]
+
+        if not valid_families:
+            raise ValueError("All model families failed to produce valid candidates")
+
+        # Score and select best family
+        best_family = min(valid_families, key=lambda f: f.final_score)
+        best_family.status = 'selected'
+
+        # Update status for non-selected families
+        for f in family_results:
+            if f.best_candidate is not None and f != best_family:
+                f.status = 'rejected'
+
+        elapsed_ms = (time.time() - start_time) * 1000
+
+        trace = SearchTrace(
+            families=family_results,
+            selected_family=best_family.family,
+            total_seeds=total_seeds,
+            total_time_ms=elapsed_ms,
+            early_exit=early_exit,
+            early_exit_reason=early_exit_reason
+        )
+
+        self.trace = trace
+        return best_family.best_candidate, trace
+
+    def _get_model_families(self, x: np.ndarray, y: np.ndarray, objective: str) -> dict:
+        """Define model families with their configurations"""
+        families = {}
+
+        # Polynomial families (stable, no multi-start needed for fitting itself)
+        max_degree = min(self.config['max_poly_degree'], 6 if objective == 'accuracy' else 4)
+        for deg in range(1, max_degree + 1):
+            families[f'poly{deg}'] = {
+                'n_params': deg,
+                'seed_count': 1,  # Polynomials are convex, single fit is sufficient
+                'seeds': [{}],  # No seed parameters needed
+                'complexity': deg,
+            }
+
+        # Exponential family
+        families['exponential'] = {
+            'n_params': 3,
+            'seed_count': self.config['seed_counts']['exponential'],
+            'seeds': self._generate_exponential_seeds(x, y),
+            'complexity': 3,
+        }
+
+        # Logarithmic families
+        if np.all(x > 0):
+            families['logarithmic'] = {
+                'n_params': 2,
+                'seed_count': 1,
+                'seeds': [{}],
+                'complexity': 2,
+            }
+
+        families['log_shifted'] = {
+            'n_params': 3,
+            'seed_count': self.config['seed_counts']['log_shifted'],
+            'seeds': self._generate_log_shifted_seeds(x, y),
+            'complexity': 3,
+        }
+
+        # Square root family
+        families['sqrt_shifted'] = {
+            'n_params': 3,
+            'seed_count': self.config['seed_counts']['sqrt'],
+            'seeds': self._generate_sqrt_seeds(x, y),
+            'complexity': 3,
+        }
+
+        # Power family
+        if np.all(x > 0) and np.all(y > 0):
+            families['power'] = {
+                'n_params': 2,
+                'seed_count': 1,
+                'seeds': [{}],
+                'complexity': 2,
+            }
+
+        # Sinusoidal family (needs multi-start for frequency/phase)
+        families['sinusoidal'] = {
+            'n_params': 4,
+            'seed_count': self.config['seed_counts']['sinusoidal'],
+            'seeds': self._generate_sinusoidal_seeds(x, y),
+            'complexity': 4,
+        }
+
+        # Reciprocal family
+        families['reciprocal'] = {
+            'n_params': 3,
+            'seed_count': self.config['seed_counts']['reciprocal'],
+            'seeds': self._generate_reciprocal_seeds(x, y),
+            'complexity': 3,
+        }
+
+        # Rational family (only for accuracy objective)
+        if objective == 'accuracy':
+            families['rational'] = {
+                'n_params': 4,
+                'seed_count': self.config['seed_counts']['rational'],
+                'seeds': self._generate_rational_seeds(x, y),
+                'complexity': 4,
+            }
+
+        return families
+
+    def _generate_exponential_seeds(self, x: np.ndarray, y: np.ndarray) -> list[dict]:
+        """Generate seed candidates for exponential: y = a * exp(b*x) + c"""
+        y_min, y_max = np.min(y), np.max(y)
+        y_mean = np.mean(y)
+        y_p10 = np.percentile(y, 10)
+        y_p25 = np.percentile(y, 25)
+        y_range = abs(y_max - y_min)
+
+        # Various c (vertical shift) candidates
+        c_candidates = [
+            y_min - y_range * 0.2,
+            y_min - y_range * 0.1,
+            y_min - 1,
+            y_p10 - 1,
+            y_p25 - 1,
+            0,
+            y_mean - y_range,
+            -abs(y_max),
+        ]
+
+        # b (growth rate) candidates - both growth and decay
+        b_candidates = [0.1, 0.5, 1.0, -0.1, -0.5, -1.0]
+
+        seeds = []
+        for c in c_candidates:
+            for b in b_candidates[:2]:  # Limit combinations
+                seeds.append({'c_init': c, 'b_hint': b})
+                if len(seeds) >= self.config['seed_counts']['exponential']:
+                    break
+            if len(seeds) >= self.config['seed_counts']['exponential']:
+                break
+
+        return seeds[:self.config['seed_counts']['exponential']]
+
+    def _generate_log_shifted_seeds(self, x: np.ndarray, y: np.ndarray) -> list[dict]:
+        """Generate seed candidates for log shifted: y = a * ln(x - c) + d"""
+        x_min = np.min(x)
+        x_range = np.max(x) - x_min
+
+        # c (horizontal shift) must be < x_min for valid domain
+        c_candidates = [
+            x_min - x_range * 0.5,
+            x_min - x_range * 0.2,
+            x_min - x_range * 0.1,
+            x_min - 2.0,
+            x_min - 1.0,
+            x_min - 0.5,
+            x_min - 0.1,
+            0 if x_min > 1 else x_min - 3.0,
+            np.percentile(x, 5) - 1.0,
+            np.percentile(x, 10) - 0.5,
+        ]
+
+        return [{'c_init': c} for c in c_candidates[:self.config['seed_counts']['log_shifted']]]
+
+    def _generate_sqrt_seeds(self, x: np.ndarray, y: np.ndarray) -> list[dict]:
+        """Generate seed candidates for sqrt: y = a * sqrt(x - c) + d"""
+        x_min = np.min(x)
+        x_range = np.max(x) - x_min
+
+        # c (horizontal shift) must be <= x_min for valid domain
+        c_candidates = [
+            x_min - x_range * 0.3,
+            x_min - x_range * 0.1,
+            x_min - 1.0,
+            x_min - 0.5,
+            x_min - 0.1,
+            x_min,
+            np.percentile(x, 5) - 0.5,
+            0 if x_min > 0.5 else x_min - 2.0,
+        ]
+
+        return [{'c_init': c} for c in c_candidates[:self.config['seed_counts']['sqrt']]]
+
+    def _generate_sinusoidal_seeds(self, x: np.ndarray, y: np.ndarray) -> list[dict]:
+        """Generate seed candidates for sinusoidal: y = A * sin(B*x + C) + D"""
+        x_range = np.max(x) - np.min(x)
+        y_min, y_max = np.min(y), np.max(y)
+
+        # Amplitude and offset estimates
+        A_est = (y_max - y_min) / 2
+        D_est = np.mean(y)
+
+        # Frequency candidates based on plausible periods
+        # Period = 2*pi/B, so B = 2*pi/period
+        period_fractions = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0]
+        B_candidates = [2 * np.pi / (x_range * frac) for frac in period_fractions]
+
+        # Add FFT-based frequency estimate if enough points
+        if len(x) >= 8:
+            try:
+                # Simple periodicity detection via autocorrelation
+                y_centered = y - np.mean(y)
+                autocorr = np.correlate(y_centered, y_centered, mode='full')
+                autocorr = autocorr[len(autocorr)//2:]
+
+                # Find first significant peak after zero
+                peaks = []
+                for i in range(1, len(autocorr) - 1):
+                    if autocorr[i] > autocorr[i-1] and autocorr[i] > autocorr[i+1]:
+                        if autocorr[i] > 0.1 * autocorr[0]:
+                            peaks.append(i)
+
+                if peaks:
+                    # Estimate period from first peak
+                    period_idx = peaks[0]
+                    estimated_period = (x_range / len(x)) * period_idx
+                    if estimated_period > 0:
+                        B_fft = 2 * np.pi / estimated_period
+                        B_candidates.insert(0, B_fft)
+            except Exception:
+                pass
+
+        # Phase candidates
+        C_candidates = [0, np.pi/4, np.pi/2, np.pi, -np.pi/4, -np.pi/2]
+
+        seeds = []
+        for B in B_candidates:
+            for C in C_candidates[:3]:  # Limit combinations
+                seeds.append({
+                    'A_init': A_est,
+                    'B_init': B,
+                    'C_init': C,
+                    'D_init': D_est
+                })
+                if len(seeds) >= self.config['seed_counts']['sinusoidal']:
+                    break
+            if len(seeds) >= self.config['seed_counts']['sinusoidal']:
+                break
+
+        return seeds[:self.config['seed_counts']['sinusoidal']]
+
+    def _generate_reciprocal_seeds(self, x: np.ndarray, y: np.ndarray) -> list[dict]:
+        """Generate seed candidates for reciprocal: y = a/(x - c) + d"""
+        x_min, x_max = np.min(x), np.max(x)
+        x_range = x_max - x_min
+
+        # Estimate c from gradient analysis
+        x_sorted_idx = np.argsort(x)
+        x_sorted = x[x_sorted_idx]
+        y_sorted = y[x_sorted_idx]
+
+        c_estimates = []
+
+        # From maximum gradient
+        if len(x_sorted) > 2:
+            dy = np.diff(y_sorted)
+            dx = np.diff(x_sorted)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                gradients = np.abs(dy / dx)
+            gradients = np.nan_to_num(gradients, nan=0)
+            max_grad_idx = np.argmax(gradients)
+            c_estimates.append((x_sorted[max_grad_idx] + x_sorted[max_grad_idx + 1]) / 2)
+
+        # Other candidates
+        c_candidates = [
+            *c_estimates,
+            x_min - x_range * 0.1,
+            x_max + x_range * 0.1,
+            x_min - 0.5,
+            x_max + 0.5,
+            0.0,
+            np.mean(x),
+            np.median(x),
+        ]
+
+        # Remove duplicates and limit
+        seen = set()
+        unique_seeds = []
+        for c in c_candidates:
+            c_rounded = round(c, 4)
+            if c_rounded not in seen:
+                seen.add(c_rounded)
+                unique_seeds.append({'c_init': c})
+
+        return unique_seeds[:self.config['seed_counts']['reciprocal']]
+
+    def _generate_rational_seeds(self, x: np.ndarray, y: np.ndarray) -> list[dict]:
+        """Generate seed candidates for rational: y = (ax + b) / (cx + d)"""
+        # Simple initial guesses
+        seeds = [
+            {'a': 1, 'b': 1, 'c': 1, 'd': 1},
+            {'a': 1, 'b': 0, 'c': 0, 'd': 1},
+            {'a': 0, 'b': 1, 'c': 1, 'd': 0},
+            {'a': 1, 'b': -1, 'c': 1, 'd': 1},
+            {'a': -1, 'b': 1, 'c': 1, 'd': -1},
+            {'a': 2, 'b': 1, 'c': 1, 'd': 2},
+        ]
+        return seeds[:self.config['seed_counts']['rational']]
+
+    def _fit_family(
+        self, family_name: str, config: dict,
+        x: np.ndarray, y: np.ndarray,
+        use_cv: bool, objective: str
+    ) -> FamilyResult:
+        """Fit all seed candidates for a model family and select the best"""
+        seeds = config['seeds']
+        n_params = config['n_params']
+        complexity = config['complexity']
+
+        candidates: list[CandidateResult] = []
+        seeds_tried = 0
+        seeds_valid = 0
+
+        for seed_id, seed in enumerate(seeds):
+            seeds_tried += 1
+
+            try:
+                # Fit this seed
+                result = self._fit_single_seed(
+                    family_name, seed_id, seed, n_params, complexity,
+                    x, y, use_cv
+                )
+
+                if result.status == 'valid':
+                    seeds_valid += 1
+                    candidates.append(result)
+
+            except Exception as e:
+                # Record failed seed
+                candidates.append(CandidateResult(
+                    family=family_name,
+                    seed_id=seed_id,
+                    params=seed,
+                    expression='',
+                    cv_rmse=float('inf'),
+                    cv_mae=float('inf'),
+                    cv_r2=-999,
+                    train_rmse=float('inf'),
+                    train_r2=-999,
+                    n_params=n_params,
+                    coverage=0,
+                    status='failed',
+                    rejection_reason=str(e)[:100]
+                ))
+
+        # Select best candidate for this family
+        valid_candidates = [c for c in candidates if c.status == 'valid']
+
+        if not valid_candidates:
+            return FamilyResult(
+                family=family_name,
+                best_candidate=None,
+                seeds_tried=seeds_tried,
+                seeds_valid=0,
+                final_score=float('inf'),
+                status='failed',
+                rejection_reason='No valid candidates'
+            )
+
+        # Compute final score for each candidate
+        n = len(x)
+        lambda_c = self.config['lambda_complexity']
+
+        for c in valid_candidates:
+            # FinalScore = CV_RMSE + lambda*(k/N)
+            c.info['final_score'] = c.cv_rmse + lambda_c * (c.n_params / n)
+
+        # Sort by final score
+        valid_candidates.sort(key=lambda c: c.info['final_score'])
+        best = valid_candidates[0]
+
+        return FamilyResult(
+            family=family_name,
+            best_candidate=best,
+            seeds_tried=seeds_tried,
+            seeds_valid=seeds_valid,
+            final_score=best.info['final_score'],
+            status='candidate',
+            top_candidates=valid_candidates[:3]  # Keep top 3 for debugging
+        )
+
+    def _fit_single_seed(
+        self, family: str, seed_id: int, seed: dict,
+        n_params: int, complexity: int,
+        x: np.ndarray, y: np.ndarray, use_cv: bool
+    ) -> CandidateResult:
+        """Fit a single seed and compute metrics"""
+
+        # Get the appropriate fitting function based on family
+        fit_result = self._call_fitter(family, x, y, seed)
+
+        if fit_result is None:
+            raise ValueError(f"Fitter returned None for {family}")
+
+        expr, y_pred, info = fit_result
+
+        # Check coverage
+        valid_mask = np.isfinite(y_pred)
+        coverage = np.sum(valid_mask) / len(y)
+
+        if coverage < self.config['min_valid_coverage']:
+            return CandidateResult(
+                family=family,
+                seed_id=seed_id,
+                params=seed,
+                expression=expr,
+                cv_rmse=float('inf'),
+                cv_mae=float('inf'),
+                cv_r2=-999,
+                train_rmse=float('inf'),
+                train_r2=-999,
+                n_params=n_params,
+                coverage=coverage,
+                status='rejected',
+                rejection_reason=f'Insufficient coverage: {coverage*100:.1f}%'
+            )
+
+        # Compute training metrics
+        y_valid = y[valid_mask]
+        y_pred_valid = y_pred[valid_mask]
+        train_rmse = np.sqrt(np.mean((y_valid - y_pred_valid) ** 2))
+        train_r2 = 1 - np.sum((y_valid - y_pred_valid)**2) / np.sum((y_valid - np.mean(y_valid))**2)
+
+        # Compute CV/holdout metrics
+        cv_rmse, cv_mae, cv_r2 = self._compute_cv_metrics(
+            family, x, y, seed, use_cv
+        )
+
+        return CandidateResult(
+            family=family,
+            seed_id=seed_id,
+            params=seed,
+            expression=expr,
+            cv_rmse=cv_rmse,
+            cv_mae=cv_mae,
+            cv_r2=cv_r2,
+            train_rmse=train_rmse,
+            train_r2=train_r2,
+            n_params=n_params,
+            coverage=coverage,
+            eval_func=info.get('eval_func'),
+            y_pred=y_pred,
+            info=info,
+            status='valid'
+        )
+
+    def _call_fitter(self, family: str, x: np.ndarray, y: np.ndarray, seed: dict):
+        """Call the appropriate fitter for a model family with seed parameters"""
+
+        # Import fitters (they're defined later in the file, but we access them via globals)
+        # This is a workaround since the fitters are defined at module level
+
+        if family.startswith('poly'):
+            degree = int(family[4:])
+            return fit_polynomial_with_seed(x, y, degree)
+        elif family == 'exponential':
+            return fit_exponential_with_seed(x, y, seed)
+        elif family == 'logarithmic':
+            return fit_logarithmic_basic(x, y)
+        elif family == 'log_shifted':
+            return fit_log_shifted_with_seed(x, y, seed)
+        elif family == 'sqrt_shifted':
+            return fit_sqrt_with_seed(x, y, seed)
+        elif family == 'power':
+            return fit_power_basic(x, y)
+        elif family == 'sinusoidal':
+            return fit_sinusoidal_with_seed(x, y, seed)
+        elif family == 'reciprocal':
+            return fit_reciprocal_with_seed(x, y, seed)
+        elif family == 'rational':
+            return fit_rational_with_seed(x, y, seed)
+        else:
+            raise ValueError(f"Unknown family: {family}")
+
+    def _compute_cv_metrics(
+        self, family: str, x: np.ndarray, y: np.ndarray,
+        seed: dict, use_cv: bool
+    ) -> tuple[float, float, float]:
+        """Compute cross-validation or holdout metrics"""
+        n = len(x)
+
+        if use_cv:
+            # K-fold cross-validation
+            n_folds = self.config['cv_folds']
+            return self._kfold_cv(family, x, y, seed, n_folds)
+        else:
+            # Repeated holdout for small datasets
+            n_repeats = self.config['holdout_repeats']
+            return self._repeated_holdout(family, x, y, seed, n_repeats)
+
+    def _kfold_cv(
+        self, family: str, x: np.ndarray, y: np.ndarray,
+        seed: dict, n_folds: int
+    ) -> tuple[float, float, float]:
+        """K-fold cross-validation"""
+        n = len(x)
+        indices = np.arange(n)
+        np.random.seed(42)
+        np.random.shuffle(indices)
+
+        fold_size = n // n_folds
+        rmse_scores, mae_scores, r2_scores = [], [], []
+
+        for fold in range(n_folds):
+            val_start = fold * fold_size
+            val_end = val_start + fold_size if fold < n_folds - 1 else n
+
+            val_idx = indices[val_start:val_end]
+            train_idx = np.concatenate([indices[:val_start], indices[val_end:]])
+
+            if len(train_idx) < 2 or len(val_idx) < 1:
+                continue
+
+            x_train, y_train = x[train_idx], y[train_idx]
+            x_val, y_val = x[val_idx], y[val_idx]
+
+            try:
+                result = self._call_fitter(family, x_train, y_train, seed)
+                if result is None:
+                    continue
+
+                _, _, info = result
+                eval_func = info.get('eval_func')
+
+                if eval_func:
+                    y_pred_val = eval_func(x_val)
+                else:
+                    continue
+
+                valid_mask = np.isfinite(y_pred_val) & np.isfinite(y_val)
+                if np.sum(valid_mask) < 1:
+                    continue
+
+                y_v = y_val[valid_mask]
+                y_p = y_pred_val[valid_mask]
+
+                rmse_scores.append(np.sqrt(np.mean((y_v - y_p) ** 2)))
+                mae_scores.append(np.mean(np.abs(y_v - y_p)))
+
+                ss_res = np.sum((y_v - y_p) ** 2)
+                ss_tot = np.sum((y_v - np.mean(y_v)) ** 2)
+                r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+                r2_scores.append(r2)
+
+            except Exception:
+                continue
+
+        if not rmse_scores:
+            return float('inf'), float('inf'), -999
+
+        return np.mean(rmse_scores), np.mean(mae_scores), np.mean(r2_scores)
+
+    def _repeated_holdout(
+        self, family: str, x: np.ndarray, y: np.ndarray,
+        seed: dict, n_repeats: int
+    ) -> tuple[float, float, float]:
+        """Repeated holdout validation (80/20 split)"""
+        n = len(x)
+        rmse_scores, mae_scores, r2_scores = [], [], []
+
+        for rep in range(n_repeats):
+            np.random.seed(42 + rep)
+            indices = np.arange(n)
+            np.random.shuffle(indices)
+
+            split_point = int(0.8 * n)
+            train_idx = indices[:split_point]
+            val_idx = indices[split_point:]
+
+            if len(train_idx) < 2 or len(val_idx) < 1:
+                continue
+
+            x_train, y_train = x[train_idx], y[train_idx]
+            x_val, y_val = x[val_idx], y[val_idx]
+
+            try:
+                result = self._call_fitter(family, x_train, y_train, seed)
+                if result is None:
+                    continue
+
+                _, _, info = result
+                eval_func = info.get('eval_func')
+
+                if eval_func:
+                    y_pred_val = eval_func(x_val)
+                else:
+                    continue
+
+                valid_mask = np.isfinite(y_pred_val) & np.isfinite(y_val)
+                if np.sum(valid_mask) < 1:
+                    continue
+
+                y_v = y_val[valid_mask]
+                y_p = y_pred_val[valid_mask]
+
+                rmse_scores.append(np.sqrt(np.mean((y_v - y_p) ** 2)))
+                mae_scores.append(np.mean(np.abs(y_v - y_p)))
+
+                ss_res = np.sum((y_v - y_p) ** 2)
+                ss_tot = np.sum((y_v - np.mean(y_v)) ** 2)
+                r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+                r2_scores.append(r2)
+
+            except Exception:
+                continue
+
+        if not rmse_scores:
+            return float('inf'), float('inf'), -999
+
+        return np.mean(rmse_scores), np.mean(mae_scores), np.mean(r2_scores)
+
+
+# ============================================================================
+# SEED-AWARE FITTING FUNCTIONS
+# These wrap the original fitters to accept seed parameters
+# ============================================================================
+
+def fit_polynomial_with_seed(x: np.ndarray, y: np.ndarray, degree: int):
+    """Polynomial fitting (wrapper for consistency)"""
+    if degree == 1:
+        return fit_linear(x, y)
+    return fit_polynomial(x, y, degree)
+
+
+def fit_exponential_with_seed(x: np.ndarray, y: np.ndarray, seed: dict):
+    """Exponential fitting with seed hint for c"""
+    MAX_EXP_ARG = 700
+
+    def safe_exp(arg):
+        with np.errstate(over='ignore'):
+            result = np.where(
+                np.abs(arg) > MAX_EXP_ARG,
+                np.nan,
+                np.exp(np.clip(arg, -MAX_EXP_ARG, MAX_EXP_ARG))
+            )
+        return result
+
+    def exponential_func(x, a, b, c):
+        return a * safe_exp(b * x) + c
+
+    c_init = seed.get('c_init', np.min(y) - 1)
+
+    try:
+        y_shifted = y - c_init
+        valid_mask = y_shifted > 0
+        if np.sum(valid_mask) < 3:
+            raise ValueError("Not enough positive values")
+
+        x_valid = x[valid_mask]
+        y_valid = y_shifted[valid_mask]
+
+        log_y = np.log(y_valid)
+        model = LinearRegression()
+        model.fit(x_valid.reshape(-1, 1), log_y)
+
+        b_init = seed.get('b_hint', model.coef_[0])
+        a_init = np.exp(model.intercept_)
+
+        popt, _ = optimize.curve_fit(
+            exponential_func, x, y,
+            p0=[a_init, b_init, c_init],
+            maxfev=2000,
+            bounds=([-np.inf, -10, -np.inf], [np.inf, 10, np.inf])
+        )
+
+        a, b, c = popt
+        y_pred = exponential_func(x, a, b, c)
+
+        c_sign = "+" if c >= 0 else "-"
+        c_val = abs(c)
+        expr = f"y = {a:.4g} * exp({b:.4g}x) {c_sign} {c_val:.4g}"
+
+        def eval_func(x_new):
+            return exponential_func(x_new, a, b, c)
+
+        return expr, y_pred, {
+            'type': 'Exponential',
+            'complexity': 3,
+            'params': {'a': a, 'b': b, 'c': c},
+            'eval_func': eval_func
+        }
+    except Exception:
+        raise ValueError("Exponential fit failed")
+
+
+def fit_logarithmic_basic(x: np.ndarray, y: np.ndarray):
+    """Basic logarithmic fitting: y = a * ln(x) + b"""
+    if np.any(x <= 0):
+        raise ValueError("Log requires positive x")
+
+    log_x = np.log(x)
+    model = LinearRegression()
+    model.fit(log_x.reshape(-1, 1), y)
+
+    a, b = model.coef_[0], model.intercept_
+    y_pred = a * np.log(x) + b
+
+    def eval_func(x_new):
+        x_arr = np.atleast_1d(x_new)
+        return np.where(x_arr > 0, a * np.log(x_arr) + b, np.nan)
+
+    expr = f"y = {a:.6g} * ln(x) + {b:.6g}" if b >= 0 else f"y = {a:.6g} * ln(x) - {abs(b):.6g}"
+    return expr, y_pred, {'type': 'Logarithmic', 'complexity': 2, 'eval_func': eval_func}
+
+
+def fit_log_shifted_with_seed(x: np.ndarray, y: np.ndarray, seed: dict):
+    """Shifted log fitting with seed hint for c"""
+    EPSILON = 1e-9
+    c_init = seed.get('c_init', np.min(x) - 1)
+
+    def log_func(x, a, c, d):
+        arg = x - c
+        with np.errstate(invalid='ignore', divide='ignore'):
+            return a * np.log(np.maximum(arg, EPSILON)) + d
+
+    def log_safe(x, a, c, d):
+        arg = x - c
+        return np.where(arg > EPSILON, a * np.log(arg) + d, np.nan)
+
+    try:
+        mask_valid = (x - c_init) > EPSILON
+        if np.sum(mask_valid) < 3:
+            raise ValueError("Not enough valid points")
+
+        x_fit = x[mask_valid]
+        y_fit = y[mask_valid]
+
+        log_x = np.log(x_fit - c_init)
+        if np.any(~np.isfinite(log_x)):
+            raise ValueError("Invalid log transform")
+
+        model = LinearRegression()
+        model.fit(log_x.reshape(-1, 1), y_fit)
+        a0, d0 = model.coef_[0], model.intercept_
+
+        popt, _ = optimize.curve_fit(
+            log_func, x_fit, y_fit,
+            p0=[a0, c_init, d0],
+            maxfev=2000,
+            bounds=([-np.inf, -np.inf, -np.inf], [np.inf, np.min(x) - EPSILON, np.inf])
+        )
+
+        a, c, d = popt
+        y_pred = log_safe(x, a, c, d)
+
+        c_sign = "-" if c >= 0 else "+"
+        c_val = abs(c)
+        d_sign = "+" if d >= 0 else "-"
+        d_val = abs(d)
+
+        expr = f"y = {a:.4g} * ln(x {c_sign} {c_val:.4g}) {d_sign} {d_val:.4g}"
+
+        def eval_func(x_new):
+            return log_safe(x_new, a, c, d)
+
+        return expr, y_pred, {
+            'type': 'Logarithmic (Shifted)',
+            'complexity': 3,
+            'domain_boundary': c,
+            'params': {'a': a, 'c': c, 'd': d},
+            'eval_func': eval_func
+        }
+    except Exception:
+        raise ValueError("Log shifted fit failed")
+
+
+def fit_sqrt_with_seed(x: np.ndarray, y: np.ndarray, seed: dict):
+    """Sqrt fitting with seed hint for c"""
+    EPSILON = 1e-9
+    c_init = seed.get('c_init', np.min(x) - 0.1)
+
+    def sqrt_func(x, a, c, d):
+        arg = x - c
+        with np.errstate(invalid='ignore'):
+            return a * np.sqrt(np.maximum(arg, 0)) + d
+
+    def sqrt_safe(x, a, c, d):
+        arg = x - c
+        return np.where(arg >= -EPSILON, a * np.sqrt(np.maximum(arg, 0)) + d, np.nan)
+
+    try:
+        mask_valid = (x - c_init) >= -EPSILON
+        if np.sum(mask_valid) < 3:
+            raise ValueError("Not enough valid points")
+
+        x_fit = x[mask_valid]
+        y_fit = y[mask_valid]
+
+        sqrt_x = np.sqrt(np.maximum(x_fit - c_init, EPSILON))
+        if np.any(~np.isfinite(sqrt_x)):
+            raise ValueError("Invalid sqrt transform")
+
+        a0 = (y_fit.max() - y_fit.min()) / (sqrt_x.max() - sqrt_x.min() + EPSILON)
+        d0 = y_fit.min()
+
+        popt, _ = optimize.curve_fit(
+            sqrt_func, x_fit, y_fit,
+            p0=[a0, c_init, d0],
+            maxfev=2000,
+            bounds=([-np.inf, -np.inf, -np.inf], [np.inf, np.min(x) + EPSILON, np.inf])
+        )
+
+        a, c, d = popt
+        y_pred = sqrt_safe(x, a, c, d)
+
+        c_sign = "-" if c >= 0 else "+"
+        c_val = abs(c)
+        d_sign = "+" if d >= 0 else "-"
+        d_val = abs(d)
+
+        expr = f"y = {a:.4g} * sqrt(x {c_sign} {c_val:.4g}) {d_sign} {d_val:.4g}"
+
+        def eval_func(x_new):
+            return sqrt_safe(x_new, a, c, d)
+
+        return expr, y_pred, {
+            'type': 'Square Root',
+            'complexity': 3,
+            'domain_boundary': c,
+            'params': {'a': a, 'c': c, 'd': d},
+            'eval_func': eval_func
+        }
+    except Exception:
+        raise ValueError("Sqrt fit failed")
+
+
+def fit_power_basic(x: np.ndarray, y: np.ndarray):
+    """Power fitting: y = a * x^b"""
+    if np.any(x <= 0) or np.any(y <= 0):
+        raise ValueError("Power requires positive x and y")
+
+    log_x = np.log(x)
+    log_y = np.log(y)
+    model = LinearRegression()
+    model.fit(log_x.reshape(-1, 1), log_y)
+
+    b_exp = model.coef_[0]
+    a_coef = np.exp(model.intercept_)
+
+    y_pred = a_coef * np.power(x, b_exp)
+
+    def eval_func(x_new):
+        x_arr = np.atleast_1d(x_new)
+        return np.where(x_arr > 0, a_coef * np.power(x_arr, b_exp), np.nan)
+
+    expr = f"y = {a_coef:.6g} * x^{b_exp:.6g}"
+    return expr, y_pred, {'type': 'Power', 'complexity': 2, 'eval_func': eval_func}
+
+
+def fit_sinusoidal_with_seed(x: np.ndarray, y: np.ndarray, seed: dict):
+    """Sinusoidal fitting with multi-start seeds"""
+    def sin_func(x, A, B, C, D):
+        return A * np.sin(B * x + C) + D
+
+    A_init = seed.get('A_init', (np.max(y) - np.min(y)) / 2)
+    B_init = seed.get('B_init', 2 * np.pi / (np.max(x) - np.min(x)))
+    C_init = seed.get('C_init', 0)
+    D_init = seed.get('D_init', np.mean(y))
+
+    try:
+        popt, _ = optimize.curve_fit(
+            sin_func, x, y,
+            p0=[A_init, B_init, C_init, D_init],
+            maxfev=2000,
+            bounds=(
+                [-np.inf, 0.001, -2*np.pi, -np.inf],
+                [np.inf, 100, 2*np.pi, np.inf]
+            )
+        )
+
+        A, B, C, D = popt
+        y_pred = sin_func(x, *popt)
+
+        def eval_func(x_new):
+            return A * np.sin(B * x_new + C) + D
+
+        expr = f"y = {A:.4g} * sin({B:.4g}x + {C:.4g}) + {D:.4g}"
+        return expr, y_pred, {
+            'type': 'Sinusoidal',
+            'complexity': 4,
+            'params': {'A': A, 'B': B, 'C': C, 'D': D},
+            'eval_func': eval_func
+        }
+    except Exception:
+        raise ValueError("Sinusoidal fit failed")
+
+
+def fit_reciprocal_with_seed(x: np.ndarray, y: np.ndarray, seed: dict):
+    """Reciprocal fitting with seed hint for c"""
+    EPSILON = 1e-10
+    c_init = seed.get('c_init', 0)
+
+    def reciprocal_func(x, a, c, d):
+        denom = x - c
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return a / denom + d
+
+    def reciprocal_safe(x, a, c, d):
+        denom = x - c
+        return np.where(np.abs(denom) < EPSILON, np.nan, a / denom + d)
+
+    try:
+        mask_valid = np.abs(x - c_init) > EPSILON * 1000
+        if np.sum(mask_valid) < 3:
+            raise ValueError("Not enough valid points")
+
+        x_fit = x[mask_valid]
+        y_fit = y[mask_valid]
+
+        # Estimate d from far-from-asymptote values
+        mask_far = np.abs(x - c_init) > (np.max(x) - np.min(x)) / 4
+        d0 = np.median(y[mask_far]) if np.sum(mask_far) > 0 else np.median(y)
+
+        # Estimate a
+        x_far = x[mask_far] if np.sum(mask_far) > 0 else x
+        y_far = y[mask_far] if np.sum(mask_far) > 0 else y
+        if len(x_far) > 0:
+            idx = len(x_far) // 2
+            a0 = (y_far[idx] - d0) * (x_far[idx] - c_init)
+        else:
+            a0 = 1.0
+
+        popt, _ = optimize.curve_fit(
+            reciprocal_func, x_fit, y_fit,
+            p0=[a0, c_init, d0],
+            maxfev=2000
+        )
+
+        a, c, d = popt
+        y_pred = reciprocal_safe(x, a, c, d)
+
+        c_sign = "-" if c >= 0 else "+"
+        c_val = abs(c)
+        d_sign = "+" if d >= 0 else "-"
+        d_val = abs(d)
+
+        expr = f"y = {a:.4g}/(x {c_sign} {c_val:.4g}) {d_sign} {d_val:.4g}"
+
+        def eval_func(x_new):
+            return reciprocal_safe(x_new, a, c, d)
+
+        return expr, y_pred, {
+            'type': 'Reciprocal',
+            'complexity': 3,
+            'asymptote_x': c,
+            'params': {'a': a, 'c': c, 'd': d},
+            'eval_func': eval_func
+        }
+    except Exception:
+        raise ValueError("Reciprocal fit failed")
+
+
+def fit_rational_with_seed(x: np.ndarray, y: np.ndarray, seed: dict):
+    """Rational fitting with seed parameters"""
+    def rational_func(x, a, b, c, d):
+        return (a * x + b) / (c * x + d)
+
+    a0 = seed.get('a', 1)
+    b0 = seed.get('b', 1)
+    c0 = seed.get('c', 1)
+    d0 = seed.get('d', 1)
+
+    try:
+        popt, _ = optimize.curve_fit(
+            rational_func, x, y,
+            p0=[a0, b0, c0, d0],
+            maxfev=2000
+        )
+
+        a, b, c, d = popt
+        y_pred = rational_func(x, *popt)
+
+        def eval_func(x_new):
+            x_arr = np.atleast_1d(x_new)
+            denom = c * x_arr + d
+            return np.where(np.abs(denom) > 1e-10, (a * x_arr + b) / denom, np.nan)
+
+        expr = f"y = ({a:.4g}x + {b:.4g}) / ({c:.4g}x + {d:.4g})"
+        return expr, y_pred, {
+            'type': 'Rational',
+            'complexity': 4,
+            'params': {'a': a, 'b': b, 'c': c, 'd': d},
+            'eval_func': eval_func
+        }
+    except Exception:
+        raise ValueError("Rational fit failed")
 
 app = FastAPI(
     title="Curve Fitting Lab API",
@@ -840,7 +1993,7 @@ def compute_validation_score(x: np.ndarray, y: np.ndarray, fit_func, n_folds: in
 
 @app.post("/fit", response_model=FitResult)
 def fit_curve(request: FitRequest):
-    """Fit a curve to the provided points"""
+    """Fit a curve to the provided points using multi-start candidate search"""
     if len(request.points) < 2:
         raise HTTPException(status_code=400, detail="Need at least 2 points")
 
@@ -848,139 +2001,97 @@ def fit_curve(request: FitRequest):
     x = np.array([p.x for p in request.points])
     y = np.array([p.y for p in request.points])
 
-    # Define models to try based on objective
-    # Cap polynomial degree at 4 to prevent overfitting
-    models = [
-        ('linear', fit_linear, 1),
-        ('poly2', lambda x, y: fit_polynomial(x, y, 2), 2),
-        ('poly3', lambda x, y: fit_polynomial(x, y, 3), 3),
-        ('exponential', fit_exponential, 3),  # Now 3 params with c shift
-        ('logarithmic', fit_logarithmic, 2),
-        ('log_shifted', fit_log_shifted, 3),  # Shifted log: y = a*ln(x-c)+d
-        ('sqrt_shifted', fit_sqrt_shifted, 3),  # Shifted sqrt: y = a*sqrt(x-c)+d
-        ('power', fit_power, 2),
-        ('sinusoidal', fit_sinusoidal, 4),
-        ('reciprocal', fit_reciprocal_shifted, 3),
-    ]
+    # Use the CandidateSearchEngine for multi-start model selection
+    engine = CandidateSearchEngine()
 
-    # Only add poly4 for accuracy objective, but with validation scoring
-    if request.objective == 'accuracy':
-        models.append(('poly4', lambda x, y: fit_polynomial(x, y, 4), 4))
-        models.append(('rational', fit_rational, 4))
+    try:
+        best_candidate, trace = engine.search(x, y, request.objective)
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    # Fit all models and collect results
-    results = []
+    # Build heuristics from trace
     heuristics = []
+    heuristics.append(f"Search: {trace.total_seeds} seeds in {trace.total_time_ms:.0f}ms")
 
-    for name, fit_func, n_params in models:
-        try:
-            expr, y_pred, info = fit_func(x, y)
-            metrics = calculate_metrics(y, y_pred, n_params)
+    for family_result in trace.families:
+        if family_result.status == 'selected':
+            heuristics.append(
+                f"✓ {family_result.family}: CV_RMSE={family_result.final_score:.4f} "
+                f"({family_result.seeds_valid}/{family_result.seeds_tried} valid)"
+            )
+        elif family_result.status == 'rejected' and family_result.best_candidate:
+            heuristics.append(
+                f"  {family_result.family}: CV_RMSE={family_result.final_score:.4f} "
+                f"({family_result.seeds_valid}/{family_result.seeds_tried} valid)"
+            )
+        elif family_result.status == 'skipped':
+            heuristics.append(f"  {family_result.family}: skipped ({family_result.rejection_reason})")
+        elif family_result.status == 'failed':
+            heuristics.append(f"  {family_result.family}: failed ({family_result.rejection_reason})")
 
-            # Check minimum valid coverage (>= 80%)
-            valid_pred_count = np.sum(np.isfinite(y_pred))
-            coverage = valid_pred_count / len(y)
-            if coverage < 0.8:
-                heuristics.append(f"{info['type']}: rejected (only {coverage*100:.0f}% valid predictions)")
-                continue
+    if trace.early_exit:
+        heuristics.append(f"Early exit: {trace.early_exit_reason}")
 
-            # Score based on objective with complexity-awareness
-            if request.objective == 'accuracy':
-                # Use validation-based scoring to prevent overfitting
-                val_mse = compute_validation_score(x, y, fit_func, n_folds=5)
-                # Convert MSE to score (lower MSE = higher score)
-                # Also incorporate AIC for tie-breaking
-                if val_mse == float('inf'):
-                    score = -999
-                else:
-                    # Primary: negative validation MSE (higher is better)
-                    # Secondary: AIC penalty for complexity
-                    aic_penalty = 0
-                    if metrics.aic is not None:
-                        aic_penalty = metrics.aic / 1000  # Scaled down
-                    score = -val_mse - aic_penalty * 0.01
+    # Calculate training metrics for the best candidate
+    if best_candidate.y_pred is not None:
+        metrics = calculate_metrics(y, best_candidate.y_pred, best_candidate.n_params)
+    else:
+        # Fallback: use CV metrics
+        metrics = FitStatistics(
+            r2=best_candidate.cv_r2,
+            rmse=best_candidate.cv_rmse,
+            mae=best_candidate.cv_mae,
+            aic=None,
+            bic=None
+        )
 
-            elif request.objective == 'interpretability':
-                # Strongly prefer simpler models using AIC
-                if metrics.aic is not None:
-                    # Lower AIC is better, so negate it
-                    score = -metrics.aic - 0.5 * info['complexity']
-                else:
-                    score = metrics.r2 - 0.2 * info['complexity']
-
-            else:  # balanced
-                # Use AIC as primary metric (balances fit and complexity)
-                if metrics.aic is not None:
-                    score = -metrics.aic
-                else:
-                    score = metrics.r2 - 0.1 * info['complexity']
-
-            results.append({
-                'name': name,
-                'expr': expr,
-                'y_pred': y_pred,
-                'metrics': metrics,
-                'info': info,
-                'score': score
-            })
-
-            heuristics.append(f"{info['type']}: R²={metrics.r2:.4f}, RMSE={metrics.rmse:.4f}")
-        except Exception as e:
-            heuristics.append(f"{name}: failed ({str(e)[:50]})")
-
-    if not results:
-        raise HTTPException(status_code=500, detail="All models failed to fit")
-
-    # Select best model
-    best = max(results, key=lambda r: r['score'])
-
-    # Generate curve points for visualization (dense sampling for smooth curves)
-    # Extend well beyond data range to show extrapolation in the viewport
+    # Generate curve points for visualization
     x_data_min, x_data_max = x.min(), x.max()
     x_data_range = x_data_max - x_data_min
 
-    # Extend to cover typical viewport (-10 to 10) or 3x the data range, whichever is larger
-    x_extend = max(x_data_range * 2, 15)  # At least 15 units beyond data on each side
+    x_extend = max(x_data_range * 2, 15)
     x_curve_min = min(x_data_min - x_extend, -20)
     x_curve_max = max(x_data_max + x_extend, 20)
 
-    N_SAMPLES = 1000  # Dense sampling for smooth visualization across extended range
+    N_SAMPLES = 1000
     x_curve = np.linspace(x_curve_min, x_curve_max, N_SAMPLES)
 
-    # Use eval_func if available for proper curve evaluation (not interpolation)
-    if 'eval_func' in best['info'] and best['info']['eval_func'] is not None:
-        # Directly evaluate the fitted model at curve x points
-        y_curve = best['info']['eval_func'](x_curve)
-    else:
-        # Fallback: use cubic interpolation for smoother curves
+    # Use eval_func for curve generation
+    if best_candidate.eval_func is not None:
+        y_curve = best_candidate.eval_func(x_curve)
+    elif best_candidate.y_pred is not None:
+        # Fallback: interpolation
         try:
             from scipy.interpolate import interp1d
-            # Sort by x for proper interpolation
             sort_idx = np.argsort(x)
             x_sorted = x[sort_idx]
-            y_sorted = best['y_pred'][sort_idx]
-            # Use cubic interpolation for smoother curves (not linear!)
+            y_sorted = best_candidate.y_pred[sort_idx]
             kind = 'cubic' if len(x) >= 4 else 'linear'
             interp_func = interp1d(x_sorted, y_sorted, kind=kind,
                                    fill_value='extrapolate', bounds_error=False)
             y_curve = interp_func(x_curve)
         except Exception:
-            y_curve = np.interp(x_curve, x, best['y_pred'])
+            y_curve = np.interp(x_curve, x, best_candidate.y_pred)
+    else:
+        y_curve = np.zeros_like(x_curve)
 
-    # Filter out NaN/Infinity values that can't be serialized to JSON
+    # Filter out NaN/Infinity values
     curve_points = [
         Point(x=float(xi), y=float(yi))
         for xi, yi in zip(x_curve, y_curve)
         if np.isfinite(xi) and np.isfinite(yi)
     ]
 
+    # Get model type from info or family name
+    model_type = best_candidate.info.get('type', best_candidate.family.title())
+
     return FitResult(
-        expression=best['expr'],
-        expressionLatex=best['expr'],  # Could be enhanced with LaTeX formatting
-        statistics=best['metrics'],
-        quality=determine_quality(best['metrics'].r2),
+        expression=best_candidate.expression,
+        expressionLatex=best_candidate.expression,
+        statistics=metrics,
+        quality=determine_quality(metrics.r2),
         curvePoints=curve_points,
-        modelType=best['info']['type'],
+        modelType=model_type,
         heuristics=heuristics
     )
 

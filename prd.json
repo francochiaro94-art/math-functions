@@ -282,6 +282,66 @@
       "priority": 32,
       "passes": true,
       "notes": "Domain boundary checking added to /integrate endpoint for sqrt and log; uses sp.atoms to find sqrt/log expressions"
+    },
+    {
+      "id": "US-033",
+      "epic": "E15: Multi-Start Model Selection",
+      "title": "Multi-start candidate search for reliable fitting",
+      "description": "As a user, I want the app to try multiple parameter initializations per model family so that it reliably finds the right model even when optimization is sensitive to initialization.",
+      "acceptanceCriteria": [
+        "For families with unstable optimization (sin/cos, exp, log, reciprocal), the engine tries multiple seeds and keeps the best result per family",
+        "CandidateSearchEngine abstraction implemented with seed generation, fitting, scoring, and selection",
+        "Sinusoidal model uses multi-start with frequency/phase grid search",
+        "The selected model is the one with the best final score under the unified scoring protocol"
+      ],
+      "priority": 33,
+      "passes": true,
+      "notes": "Implemented CandidateSearchEngine with per-family seed generation; sinusoidal uses 12 seeds with autocorrelation-based frequency hints"
+    },
+    {
+      "id": "US-034",
+      "epic": "E15: Multi-Start Model Selection",
+      "title": "Fair scoring across model families",
+      "description": "As a user, I want model selection to remain fair across model families so that trying more seeds doesn't cause one family to always win.",
+      "acceptanceCriteria": [
+        "All families use the same scoring protocol (CV/holdout + complexity regularization)",
+        "FinalScore = CV_RMSE + lambda*(k/N) where k = parameter count, lambda = 0.25",
+        "For N >= 25: use 3-fold CV; for N < 25: use repeated holdout (3 repeats of 80/20 split)",
+        "The only difference between families is their seed-generation strategy and parameter count"
+      ],
+      "priority": 34,
+      "passes": true,
+      "notes": "Unified scoring with CV_RMSE + complexity regularization; same lambda (0.25) applied to all families"
+    },
+    {
+      "id": "US-035",
+      "epic": "E15: Multi-Start Model Selection",
+      "title": "Performance budget and adaptive search",
+      "description": "As a user, I want the search to complete quickly while still finding good fits.",
+      "acceptanceCriteria": [
+        "Implement a time budget (max 3 seconds) and seed budget (max 60 seeds)",
+        "Adaptive behavior: if time/seed budget exceeded, remaining families are skipped",
+        "Early exit if an excellent fit is found (RMSE < 0.001)",
+        "All skips recorded in trace with reason"
+      ],
+      "priority": 35,
+      "passes": true,
+      "notes": "3-second time budget, 60-seed budget; early exit on excellent fits; trace shows skipped families with reasons"
+    },
+    {
+      "id": "US-036",
+      "epic": "E15: Multi-Start Model Selection",
+      "title": "Search trace for debugging",
+      "description": "As a user, I want to see which models were tried and why the winner was chosen.",
+      "acceptanceCriteria": [
+        "Heuristics show total seeds tried and search time",
+        "For each family: seeds tried, seeds valid, CV_RMSE, and status (selected/rejected/skipped/failed)",
+        "Selected model marked with checkmark in heuristics",
+        "Early exit reason shown if applicable"
+      ],
+      "priority": 36,
+      "passes": true,
+      "notes": "SearchTrace dataclass captures all candidate results; heuristics display formatted trace with checkmarks and CV metrics"
     }
   ]
 }

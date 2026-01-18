@@ -285,6 +285,7 @@ Compute definite integral.
 - Backend scoring heuristics vary by objective (accuracy favors complex models, interpretability penalizes complexity)
 
 ## Recent Additions
+- **Multi-Start Model Selection**: CandidateSearchEngine tries multiple parameter seeds per model family with unified CV-based scoring (CV_RMSE + complexity regularization). Prevents overfitting and ensures fair selection across families.
 - **LaTeX Rendering**: Functions, derivatives, and integrals rendered with KaTeX (proper math symbols: e^{x}, √, ln, fractions, superscripts)
 - **Asymptote Display**: Derivatives & Extrema card shows vertical/horizontal asymptotes for reciprocal/rational models
 - **Extrapolation**: Fitted curves extend beyond data range with dotted lines for extrapolation regions
