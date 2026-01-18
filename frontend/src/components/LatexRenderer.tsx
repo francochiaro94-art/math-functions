@@ -90,15 +90,28 @@ export function expressionToLatex(expr: string): string {
   // Handle sqrt
   latex = latex.replace(/\bsqrt\(([^)]+)\)/g, '\\sqrt{$1}');
 
+  // Handle exponentiation ** BEFORE converting * to \cdot
+  // Handle (expression)**n -> (expression)^{n}
+  latex = latex.replace(/\)\s*\*\*\s*(\d+)/g, ')^{$1}');
+  // Handle variable**n -> variable^{n}
+  latex = latex.replace(/([a-zA-Z])\s*\*\*\s*(\d+)/g, '$1^{$2}');
+  // Handle number**n -> number^{n}
+  latex = latex.replace(/(\d+\.?\d*)\s*\*\*\s*(\d+)/g, '$1^{$2}');
+
+  // Convert fractions: number/(expression)^n -> \frac{number}{(expression)^n}
+  latex = latex.replace(/(-?\d+\.?\d*)\s*\/\s*(\([^)]+\)\^?\{?\d*\}?)/g, (_, num, denom) => {
+    return `\\frac{${num}}{${denom}}`;
+  });
+
   // Convert fractions: number/(expression) -> \frac{number}{expression}
   latex = latex.replace(/(-?\d+\.?\d*)\s*\/\s*\(([^)]+)\)/g, (_, num, denom) => {
     return `\\frac{${num}}{${denom}}`;
   });
 
   // Handle polynomial exponents: x^2 -> x^{2}
-  latex = latex.replace(/x\^(\d+)/g, 'x^{$1}');
+  latex = latex.replace(/\^(\d+)(?!\})/g, '^{$1}');
 
-  // Convert * to \cdot (middle dot)
+  // Convert * to \cdot (middle dot) - only single asterisks now
   latex = latex.replace(/\s*\*\s*/g, ' \\cdot ');
 
   // Handle minus signs in expressions (convert to proper minus)
