@@ -4,6 +4,7 @@ import { useState, useCallback, useRef } from 'react';
 import { CartesianChart } from '@/components/CartesianChart';
 import { LatexRenderer, expressionToLatex, derivativeToLatex, integralToLatex } from '@/components/LatexRenderer';
 import { Tooltip, metricTooltips } from '@/components/Tooltip';
+import { CollapsibleCard } from '@/components/CollapsibleCard';
 import type { Point, FittedCurve, FittingObjective, FitResult, AnalyticalProperties, IntegralResult } from '@/types/chart';
 
 const MAX_POINTS = 50000;
@@ -516,73 +517,125 @@ export default function Home() {
                   Analysis
                 </h2>
 
-                <div className="space-y-2">
-                  <button
-                    onClick={handleComputeAnalytical}
-                    className="w-full px-3 py-2 text-sm font-medium rounded-lg bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors text-left"
+                <div className="space-y-3">
+                  {/* Derivatives & Extrema Card */}
+                  <CollapsibleCard
+                    title="Derivatives & Extrema"
+                    subtitle={analyticalProps ? 'Computed' : 'Click to compute'}
+                    defaultOpen={true}
                   >
-                    Compute Derivatives & Extrema
-                  </button>
+                    <div className="space-y-3">
+                      <button
+                        onClick={handleComputeAnalytical}
+                        className="w-full px-3 py-2 text-sm font-medium rounded-lg bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/30 transition-colors"
+                      >
+                        {analyticalProps ? 'Recompute' : 'Compute Derivatives & Extrema'}
+                      </button>
 
-                  <button
-                    onClick={handleStartIntegral}
-                    className={`w-full px-3 py-2 text-sm font-medium rounded-lg transition-colors text-left ${
-                      isSelectingIntegral
-                        ? 'bg-green-500 text-white'
-                        : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700'
-                    }`}
+                      {analyticalProps ? (
+                        <div className="space-y-3 pt-2 animate-fade-in">
+                          <div>
+                            <span className="text-xs text-zinc-500">First Derivative</span>
+                            <div className="text-sm py-1 overflow-x-auto">
+                              <LatexRenderer latex={derivativeToLatex(analyticalProps.firstDerivative, 1)} />
+                            </div>
+                          </div>
+                          <div>
+                            <span className="text-xs text-zinc-500">Second Derivative</span>
+                            <div className="text-sm py-1 overflow-x-auto">
+                              <LatexRenderer latex={derivativeToLatex(analyticalProps.secondDerivative, 2)} />
+                            </div>
+                          </div>
+                          {analyticalProps.extrema.length > 0 && (
+                            <div>
+                              <span className="text-xs text-zinc-500">Extrema</span>
+                              {analyticalProps.extrema.map((e, i) => (
+                                <p key={i} className="text-sm font-mono">
+                                  {e.type}: ({e.x.toFixed(2)}, {e.y.toFixed(2)})
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-zinc-400 dark:text-zinc-500 italic">
+                          Click the button above to compute derivatives and find extrema.
+                        </p>
+                      )}
+                    </div>
+                  </CollapsibleCard>
+
+                  {/* Area Under Curve (Integral) Card */}
+                  <CollapsibleCard
+                    title="Area Under Curve"
+                    subtitle={integralResult ? `Area = ${integralResult.area.toFixed(4)}` : 'Select bounds'}
+                    defaultOpen={true}
                   >
-                    {isSelectingIntegral
-                      ? `Select point ${integralSelectionStep?.toUpperCase()}`
-                      : 'Compute Area Under Curve'}
-                  </button>
-                </div>
+                    <div className="space-y-3">
+                      {/* Bounds selection */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="p-2 bg-zinc-50 dark:bg-zinc-800 rounded text-center">
+                          <span className="text-[10px] text-zinc-500 block">Point A</span>
+                          <span className="text-sm font-mono font-semibold">
+                            {integralRange?.a ? `x = ${integralRange.a.x.toFixed(2)}` : '—'}
+                          </span>
+                        </div>
+                        <div className="p-2 bg-zinc-50 dark:bg-zinc-800 rounded text-center">
+                          <span className="text-[10px] text-zinc-500 block">Point B</span>
+                          <span className="text-sm font-mono font-semibold">
+                            {integralRange?.b ? `x = ${integralRange.b.x.toFixed(2)}` : '—'}
+                          </span>
+                        </div>
+                      </div>
 
-                {/* Analytical results */}
-                {analyticalProps && (
-                  <div className="mt-3 p-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-lg space-y-3 animate-fade-in">
-                    <div>
-                      <span className="text-xs text-zinc-500">First Derivative</span>
-                      <div className="text-sm py-1 overflow-x-auto">
-                        <LatexRenderer latex={derivativeToLatex(analyticalProps.firstDerivative, 1)} />
-                      </div>
-                    </div>
-                    <div>
-                      <span className="text-xs text-zinc-500">Second Derivative</span>
-                      <div className="text-sm py-1 overflow-x-auto">
-                        <LatexRenderer latex={derivativeToLatex(analyticalProps.secondDerivative, 2)} />
-                      </div>
-                    </div>
-                    {analyticalProps.extrema.length > 0 && (
-                      <div>
-                        <span className="text-xs text-zinc-500">Extrema</span>
-                        {analyticalProps.extrema.map((e, i) => (
-                          <p key={i} className="text-sm font-mono">
-                            {e.type}: ({e.x.toFixed(2)}, {e.y.toFixed(2)})
+                      {/* Select bounds button */}
+                      <button
+                        onClick={handleStartIntegral}
+                        className={`w-full px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
+                          isSelectingIntegral
+                            ? 'bg-green-500 text-white'
+                            : 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400 hover:bg-green-100 dark:hover:bg-green-900/30'
+                        }`}
+                      >
+                        {isSelectingIntegral
+                          ? `Click chart to select Point ${integralSelectionStep?.toUpperCase()}`
+                          : integralRange?.a && integralRange?.b
+                          ? 'Reselect Bounds'
+                          : 'Select Bounds on Chart'}
+                      </button>
+
+                      {/* Placeholder or Result */}
+                      {integralResult && integralRange?.a && integralRange?.b ? (
+                        <div className="p-3 bg-green-50 dark:bg-green-900/20 rounded-lg animate-fade-in">
+                          <span className="text-xs text-green-600 dark:text-green-400">Definite Integral</span>
+                          <div className="text-sm py-2 overflow-x-auto">
+                            <LatexRenderer
+                              latex={integralToLatex(
+                                integralResult.area,
+                                Math.min(integralRange.a.x, integralRange.b.x),
+                                Math.max(integralRange.a.x, integralRange.b.x),
+                                fitResult.expression
+                              )}
+                              displayMode={true}
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="p-3 bg-zinc-50 dark:bg-zinc-800 rounded-lg text-center">
+                          <div className="text-zinc-400 dark:text-zinc-500 mb-2">
+                            <svg className="w-8 h-8 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                            </svg>
+                          </div>
+                          <p className="text-sm font-medium text-zinc-600 dark:text-zinc-400">Select two points</p>
+                          <p className="text-xs text-zinc-400 dark:text-zinc-500 mt-1">
+                            Click &quot;Select Bounds&quot; then pick Point A and Point B on the chart to compute the area.
                           </p>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Integral result */}
-                {integralResult && integralRange && fitResult && (
-                  <div className="mt-3 p-3 bg-green-50 dark:bg-green-900/20 rounded-lg animate-fade-in">
-                    <span className="text-xs text-green-600 dark:text-green-400">Definite Integral</span>
-                    <div className="text-sm py-2 overflow-x-auto">
-                      <LatexRenderer
-                        latex={integralToLatex(
-                          integralResult.area,
-                          Math.min(integralRange.a.x, integralRange.b.x),
-                          Math.max(integralRange.a.x, integralRange.b.x),
-                          fitResult.expression
-                        )}
-                        displayMode={true}
-                      />
+                        </div>
+                      )}
                     </div>
-                  </div>
-                )}
+                  </CollapsibleCard>
+                </div>
               </section>
             )}
 
