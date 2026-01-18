@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { CartesianChart } from '@/components/CartesianChart';
+import { LatexRenderer, expressionToLatex, derivativeToLatex, integralToLatex } from '@/components/LatexRenderer';
 import type { Point, FittedCurve, FittingObjective, FitResult, AnalyticalProperties, IntegralResult } from '@/types/chart';
 
 const MAX_POINTS = 50000;
@@ -454,7 +455,9 @@ export default function Home() {
 
                   <div>
                     <span className="text-xs text-zinc-500">Function</span>
-                    <p className="text-sm font-mono break-all">{fitResult.expression}</p>
+                    <div className="text-sm py-1 overflow-x-auto">
+                      <LatexRenderer latex={`y = ${expressionToLatex(fitResult.expression)}`} />
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-2 flex-wrap">
@@ -530,14 +533,18 @@ export default function Home() {
 
                 {/* Analytical results */}
                 {analyticalProps && (
-                  <div className="mt-3 p-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-lg space-y-2 animate-fade-in">
+                  <div className="mt-3 p-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-lg space-y-3 animate-fade-in">
                     <div>
                       <span className="text-xs text-zinc-500">First Derivative</span>
-                      <p className="text-sm font-mono">{analyticalProps.firstDerivative}</p>
+                      <div className="text-sm py-1 overflow-x-auto">
+                        <LatexRenderer latex={derivativeToLatex(analyticalProps.firstDerivative, 1)} />
+                      </div>
                     </div>
                     <div>
                       <span className="text-xs text-zinc-500">Second Derivative</span>
-                      <p className="text-sm font-mono">{analyticalProps.secondDerivative}</p>
+                      <div className="text-sm py-1 overflow-x-auto">
+                        <LatexRenderer latex={derivativeToLatex(analyticalProps.secondDerivative, 2)} />
+                      </div>
                     </div>
                     {analyticalProps.extrema.length > 0 && (
                       <div>
@@ -553,13 +560,20 @@ export default function Home() {
                 )}
 
                 {/* Integral result */}
-                {integralResult && (
+                {integralResult && integralRange && fitResult && (
                   <div className="mt-3 p-3 bg-green-50 dark:bg-green-900/20 rounded-lg animate-fade-in">
-                    <span className="text-xs text-green-600 dark:text-green-400">Integral</span>
-                    <p className="text-sm font-mono">{integralResult.expression}</p>
-                    <p className="text-lg font-semibold text-green-600 dark:text-green-400 mt-1">
-                      Area = {integralResult.area.toFixed(4)}
-                    </p>
+                    <span className="text-xs text-green-600 dark:text-green-400">Definite Integral</span>
+                    <div className="text-sm py-2 overflow-x-auto">
+                      <LatexRenderer
+                        latex={integralToLatex(
+                          integralResult.area,
+                          Math.min(integralRange.a.x, integralRange.b.x),
+                          Math.max(integralRange.a.x, integralRange.b.x),
+                          fitResult.expression
+                        )}
+                        displayMode={true}
+                      />
+                    </div>
                   </div>
                 )}
               </section>
