@@ -1210,6 +1210,22 @@ class FitStatistics(BaseModel):
     bic: Optional[float] = None
 
 
+class ModelParameter(BaseModel):
+    name: str
+    value: float
+    label: str
+    hint: Optional[str] = None
+    min: Optional[float] = None
+    max: Optional[float] = None
+    step: Optional[float] = None
+
+
+class ModelParameterSchema(BaseModel):
+    modelFamily: str
+    expressionTemplate: str
+    parameters: list[ModelParameter]
+
+
 class FitResult(BaseModel):
     expression: str
     expressionLatex: str
@@ -1218,6 +1234,7 @@ class FitResult(BaseModel):
     curvePoints: list[Point]
     modelType: str
     heuristics: list[str]
+    parameterSchema: Optional[ModelParameterSchema] = None
 
 
 class AnalyzeRequest(BaseModel):
@@ -1251,6 +1268,260 @@ class IntegralRequest(BaseModel):
 class IntegralResult(BaseModel):
     value: float
     expression: str
+
+
+class EvaluateRequest(BaseModel):
+    modelFamily: str
+    parameters: dict[str, float]
+    points: list[Point]
+    xRange: Optional[tuple[float, float]] = None
+
+
+class EvaluateResult(BaseModel):
+    expression: str
+    expressionLatex: str
+    statistics: FitStatistics
+    quality: Literal['bad', 'regular', 'good']
+    curvePoints: list[Point]
+    valid: bool
+    error: Optional[str] = None
+
+
+# ============================================================================
+# PARAMETER SCHEMA GENERATOR
+# ============================================================================
+
+def get_parameter_schema(model_type: str, params: dict) -> ModelParameterSchema:
+    """Generate parameter schema for a model type with current parameter values"""
+
+    SCHEMA_REGISTRY = {
+        'Linear': {
+            'expressionTemplate': 'y = {m}x + {b}',
+            'parameters': [
+                {'name': 'm', 'label': 'Slope', 'hint': 'Rate of change', 'step': 0.1},
+                {'name': 'b', 'label': 'Intercept', 'hint': 'Y-intercept', 'step': 0.1},
+            ]
+        },
+        'Polynomial (degree 2)': {
+            'expressionTemplate': 'y = {a2}x² + {a1}x + {a0}',
+            'parameters': [
+                {'name': 'a2', 'label': 'a₂', 'hint': 'Quadratic coefficient', 'step': 0.01},
+                {'name': 'a1', 'label': 'a₁', 'hint': 'Linear coefficient', 'step': 0.1},
+                {'name': 'a0', 'label': 'a₀', 'hint': 'Constant term', 'step': 0.1},
+            ]
+        },
+        'Polynomial (degree 3)': {
+            'expressionTemplate': 'y = {a3}x³ + {a2}x² + {a1}x + {a0}',
+            'parameters': [
+                {'name': 'a3', 'label': 'a₃', 'hint': 'Cubic coefficient', 'step': 0.001},
+                {'name': 'a2', 'label': 'a₂', 'hint': 'Quadratic coefficient', 'step': 0.01},
+                {'name': 'a1', 'label': 'a₁', 'hint': 'Linear coefficient', 'step': 0.1},
+                {'name': 'a0', 'label': 'a₀', 'hint': 'Constant term', 'step': 0.1},
+            ]
+        },
+        'Polynomial (degree 4)': {
+            'expressionTemplate': 'y = {a4}x⁴ + {a3}x³ + {a2}x² + {a1}x + {a0}',
+            'parameters': [
+                {'name': 'a4', 'label': 'a₄', 'hint': 'Quartic coefficient', 'step': 0.0001},
+                {'name': 'a3', 'label': 'a₃', 'hint': 'Cubic coefficient', 'step': 0.001},
+                {'name': 'a2', 'label': 'a₂', 'hint': 'Quadratic coefficient', 'step': 0.01},
+                {'name': 'a1', 'label': 'a₁', 'hint': 'Linear coefficient', 'step': 0.1},
+                {'name': 'a0', 'label': 'a₀', 'hint': 'Constant term', 'step': 0.1},
+            ]
+        },
+        'Exponential': {
+            'expressionTemplate': 'y = {a} × exp({b}x) + {c}',
+            'parameters': [
+                {'name': 'a', 'label': 'Amplitude', 'hint': 'Scaling factor', 'step': 0.1},
+                {'name': 'b', 'label': 'Growth Rate', 'hint': 'Exponential rate (+ growth, - decay)', 'step': 0.01, 'min': -10, 'max': 10},
+                {'name': 'c', 'label': 'Vertical Shift', 'hint': 'Asymptotic value', 'step': 0.1},
+            ]
+        },
+        'Logarithmic': {
+            'expressionTemplate': 'y = {a} × ln(x) + {b}',
+            'parameters': [
+                {'name': 'a', 'label': 'Scale', 'hint': 'Logarithm coefficient', 'step': 0.1},
+                {'name': 'b', 'label': 'Vertical Shift', 'hint': 'Y-offset', 'step': 0.1},
+            ]
+        },
+        'Logarithmic (Shifted)': {
+            'expressionTemplate': 'y = {a} × ln(x - {c}) + {d}',
+            'parameters': [
+                {'name': 'a', 'label': 'Scale', 'hint': 'Logarithm coefficient', 'step': 0.1},
+                {'name': 'c', 'label': 'Domain Shift', 'hint': 'Horizontal shift (domain starts at x > c)', 'step': 0.1},
+                {'name': 'd', 'label': 'Vertical Shift', 'hint': 'Y-offset', 'step': 0.1},
+            ]
+        },
+        'Square Root': {
+            'expressionTemplate': 'y = {a} × √(x - {c}) + {d}',
+            'parameters': [
+                {'name': 'a', 'label': 'Scale', 'hint': 'Coefficient', 'step': 0.1},
+                {'name': 'c', 'label': 'Domain Shift', 'hint': 'Horizontal shift (domain starts at x ≥ c)', 'step': 0.1},
+                {'name': 'd', 'label': 'Vertical Shift', 'hint': 'Y-offset', 'step': 0.1},
+            ]
+        },
+        'Power': {
+            'expressionTemplate': 'y = {a} × x^{b}',
+            'parameters': [
+                {'name': 'a', 'label': 'Coefficient', 'hint': 'Scaling factor', 'step': 0.1},
+                {'name': 'b', 'label': 'Exponent', 'hint': 'Power', 'step': 0.1},
+            ]
+        },
+        'Sinusoidal': {
+            'expressionTemplate': 'y = {A} × sin({B}x + {C}) + {D}',
+            'parameters': [
+                {'name': 'A', 'label': 'Amplitude', 'hint': 'Peak deviation from center', 'step': 0.1},
+                {'name': 'B', 'label': 'Frequency', 'hint': 'Angular frequency (period = 2π/B)', 'step': 0.01, 'min': 0.001},
+                {'name': 'C', 'label': 'Phase', 'hint': 'Horizontal shift', 'step': 0.1},
+                {'name': 'D', 'label': 'Vertical Shift', 'hint': 'Center line', 'step': 0.1},
+            ]
+        },
+        'Reciprocal': {
+            'expressionTemplate': 'y = {a}/(x - {c}) + {d}',
+            'parameters': [
+                {'name': 'a', 'label': 'Numerator', 'hint': 'Scaling factor', 'step': 0.1},
+                {'name': 'c', 'label': 'Asymptote', 'hint': 'Vertical asymptote at x = c', 'step': 0.1},
+                {'name': 'd', 'label': 'Horizontal Asymptote', 'hint': 'Value as x → ±∞', 'step': 0.1},
+            ]
+        },
+        'Rational': {
+            'expressionTemplate': 'y = ({a}x + {b})/({c}x + {d})',
+            'parameters': [
+                {'name': 'a', 'label': 'a', 'hint': 'Numerator x coefficient', 'step': 0.1},
+                {'name': 'b', 'label': 'b', 'hint': 'Numerator constant', 'step': 0.1},
+                {'name': 'c', 'label': 'c', 'hint': 'Denominator x coefficient', 'step': 0.1},
+                {'name': 'd', 'label': 'd', 'hint': 'Denominator constant', 'step': 0.1},
+            ]
+        },
+    }
+
+    schema_def = SCHEMA_REGISTRY.get(model_type)
+    if not schema_def:
+        return None
+
+    # Build parameters with current values
+    parameters = []
+    for param_def in schema_def['parameters']:
+        param_name = param_def['name']
+        param_value = params.get(param_name, 0.0)
+        parameters.append(ModelParameter(
+            name=param_name,
+            value=param_value,
+            label=param_def['label'],
+            hint=param_def.get('hint'),
+            min=param_def.get('min'),
+            max=param_def.get('max'),
+            step=param_def.get('step', 0.1),
+        ))
+
+    return ModelParameterSchema(
+        modelFamily=model_type,
+        expressionTemplate=schema_def['expressionTemplate'],
+        parameters=parameters
+    )
+
+
+def evaluate_with_params(model_family: str, params: dict, x: np.ndarray) -> tuple[np.ndarray, str, bool, str]:
+    """Evaluate a model with given parameters and return predictions, expression, validity, and error message"""
+    MAX_EXP_ARG = 700
+    EPSILON = 1e-9
+
+    try:
+        if model_family == 'Linear':
+            m, b = params.get('m', 1), params.get('b', 0)
+            y = m * x + b
+            b_sign = '+' if b >= 0 else '-'
+            expr = f"y = {m:.4g}x {b_sign} {abs(b):.4g}"
+            return y, expr, True, ''
+
+        elif model_family.startswith('Polynomial'):
+            if 'degree 2' in model_family:
+                a2, a1, a0 = params.get('a2', 0), params.get('a1', 0), params.get('a0', 0)
+                y = a2 * x**2 + a1 * x + a0
+                expr = f"y = {a2:.4g}x² + {a1:.4g}x + {a0:.4g}"
+            elif 'degree 3' in model_family:
+                a3, a2, a1, a0 = params.get('a3', 0), params.get('a2', 0), params.get('a1', 0), params.get('a0', 0)
+                y = a3 * x**3 + a2 * x**2 + a1 * x + a0
+                expr = f"y = {a3:.4g}x³ + {a2:.4g}x² + {a1:.4g}x + {a0:.4g}"
+            elif 'degree 4' in model_family:
+                a4, a3, a2, a1, a0 = params.get('a4', 0), params.get('a3', 0), params.get('a2', 0), params.get('a1', 0), params.get('a0', 0)
+                y = a4 * x**4 + a3 * x**3 + a2 * x**2 + a1 * x + a0
+                expr = f"y = {a4:.4g}x⁴ + {a3:.4g}x³ + {a2:.4g}x² + {a1:.4g}x + {a0:.4g}"
+            else:
+                return np.zeros_like(x), '', False, 'Unsupported polynomial degree'
+            return y, expr, True, ''
+
+        elif model_family == 'Exponential':
+            a, b, c = params.get('a', 1), params.get('b', 1), params.get('c', 0)
+            with np.errstate(over='ignore'):
+                exp_arg = b * x
+                y = np.where(
+                    np.abs(exp_arg) > MAX_EXP_ARG,
+                    np.nan,
+                    a * np.exp(np.clip(exp_arg, -MAX_EXP_ARG, MAX_EXP_ARG)) + c
+                )
+            c_sign = '+' if c >= 0 else '-'
+            expr = f"y = {a:.4g} * exp({b:.4g}x) {c_sign} {abs(c):.4g}"
+            return y, expr, True, ''
+
+        elif model_family == 'Logarithmic':
+            a, b = params.get('a', 1), params.get('b', 0)
+            y = np.where(x > EPSILON, a * np.log(x) + b, np.nan)
+            b_sign = '+' if b >= 0 else '-'
+            expr = f"y = {a:.4g} * ln(x) {b_sign} {abs(b):.4g}"
+            return y, expr, True, ''
+
+        elif model_family == 'Logarithmic (Shifted)':
+            a, c, d = params.get('a', 1), params.get('c', 0), params.get('d', 0)
+            arg = x - c
+            y = np.where(arg > EPSILON, a * np.log(arg) + d, np.nan)
+            c_sign = '-' if c >= 0 else '+'
+            d_sign = '+' if d >= 0 else '-'
+            expr = f"y = {a:.4g} * ln(x {c_sign} {abs(c):.4g}) {d_sign} {abs(d):.4g}"
+            return y, expr, True, ''
+
+        elif model_family == 'Square Root':
+            a, c, d = params.get('a', 1), params.get('c', 0), params.get('d', 0)
+            arg = x - c
+            y = np.where(arg >= -EPSILON, a * np.sqrt(np.maximum(arg, 0)) + d, np.nan)
+            c_sign = '-' if c >= 0 else '+'
+            d_sign = '+' if d >= 0 else '-'
+            expr = f"y = {a:.4g} * sqrt(x {c_sign} {abs(c):.4g}) {d_sign} {abs(d):.4g}"
+            return y, expr, True, ''
+
+        elif model_family == 'Power':
+            a, b = params.get('a', 1), params.get('b', 1)
+            y = np.where(x > 0, a * np.power(x, b), np.nan)
+            expr = f"y = {a:.4g} * x^{b:.4g}"
+            return y, expr, True, ''
+
+        elif model_family == 'Sinusoidal':
+            A, B, C, D = params.get('A', 1), params.get('B', 1), params.get('C', 0), params.get('D', 0)
+            y = A * np.sin(B * x + C) + D
+            expr = f"y = {A:.4g} * sin({B:.4g}x + {C:.4g}) + {D:.4g}"
+            return y, expr, True, ''
+
+        elif model_family == 'Reciprocal':
+            a, c, d = params.get('a', 1), params.get('c', 0), params.get('d', 0)
+            denom = x - c
+            y = np.where(np.abs(denom) > EPSILON, a / denom + d, np.nan)
+            c_sign = '-' if c >= 0 else '+'
+            d_sign = '+' if d >= 0 else '-'
+            expr = f"y = {a:.4g}/(x {c_sign} {abs(c):.4g}) {d_sign} {abs(d):.4g}"
+            return y, expr, True, ''
+
+        elif model_family == 'Rational':
+            a, b, c, d = params.get('a', 1), params.get('b', 0), params.get('c', 0), params.get('d', 1)
+            denom = c * x + d
+            y = np.where(np.abs(denom) > EPSILON, (a * x + b) / denom, np.nan)
+            expr = f"y = ({a:.4g}x + {b:.4g}) / ({c:.4g}x + {d:.4g})"
+            return y, expr, True, ''
+
+        else:
+            return np.zeros_like(x), '', False, f'Unknown model family: {model_family}'
+
+    except Exception as e:
+        return np.zeros_like(x), '', False, str(e)
 
 
 # Model fitting functions
@@ -2085,6 +2356,46 @@ def fit_curve(request: FitRequest):
     # Get model type from info or family name
     model_type = best_candidate.info.get('type', best_candidate.family.title())
 
+    # Get parameters from info and generate schema
+    params = best_candidate.info.get('params', {})
+
+    # For Linear/Polynomial, we need to extract params differently
+    if model_type == 'Linear':
+        # Parse from expression: y = mx + b
+        import re
+        match = re.match(r'y\s*=\s*(-?[\d.e+-]+)x\s*[+-]\s*([\d.e+-]+)', best_candidate.expression)
+        if match:
+            params = {'m': float(match.group(1)), 'b': float(match.group(2))}
+            if '-' in best_candidate.expression.split('x')[1]:
+                params['b'] = -params['b']
+    elif 'Polynomial' in model_type:
+        # For polynomial, extract coefficients from pipeline (they're in the expression)
+        # This is handled differently - we'll parse from expression
+        import re
+        if 'degree 2' in model_type:
+            terms = re.findall(r'(-?[\d.e+-]+)', best_candidate.expression)
+            if len(terms) >= 3:
+                params = {'a2': float(terms[0]) if len(terms) > 0 else 0,
+                          'a1': float(terms[1]) if len(terms) > 1 else 0,
+                          'a0': float(terms[2]) if len(terms) > 2 else 0}
+        elif 'degree 3' in model_type:
+            terms = re.findall(r'(-?[\d.e+-]+)', best_candidate.expression)
+            if len(terms) >= 4:
+                params = {'a3': float(terms[0]) if len(terms) > 0 else 0,
+                          'a2': float(terms[1]) if len(terms) > 1 else 0,
+                          'a1': float(terms[2]) if len(terms) > 2 else 0,
+                          'a0': float(terms[3]) if len(terms) > 3 else 0}
+        elif 'degree 4' in model_type:
+            terms = re.findall(r'(-?[\d.e+-]+)', best_candidate.expression)
+            if len(terms) >= 5:
+                params = {'a4': float(terms[0]) if len(terms) > 0 else 0,
+                          'a3': float(terms[1]) if len(terms) > 1 else 0,
+                          'a2': float(terms[2]) if len(terms) > 2 else 0,
+                          'a1': float(terms[3]) if len(terms) > 3 else 0,
+                          'a0': float(terms[4]) if len(terms) > 4 else 0}
+
+    parameter_schema = get_parameter_schema(model_type, params)
+
     return FitResult(
         expression=best_candidate.expression,
         expressionLatex=best_candidate.expression,
@@ -2092,7 +2403,8 @@ def fit_curve(request: FitRequest):
         quality=determine_quality(metrics.r2),
         curvePoints=curve_points,
         modelType=model_type,
-        heuristics=heuristics
+        heuristics=heuristics,
+        parameterSchema=parameter_schema
     )
 
 
@@ -2273,6 +2585,87 @@ def compute_integral(request: IntegralRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not compute integral: {str(e)}")
+
+
+@app.post("/evaluate", response_model=EvaluateResult)
+def evaluate_function(request: EvaluateRequest):
+    """Evaluate a model with custom parameters"""
+    if len(request.points) < 2:
+        raise HTTPException(status_code=400, detail="Need at least 2 points")
+
+    # Extract data
+    x_data = np.array([p.x for p in request.points])
+    y_data = np.array([p.y for p in request.points])
+
+    # Evaluate with parameters
+    y_pred, expression, valid, error = evaluate_with_params(
+        request.modelFamily,
+        request.parameters,
+        x_data
+    )
+
+    if not valid:
+        return EvaluateResult(
+            expression='',
+            expressionLatex='',
+            statistics=FitStatistics(r2=-999, rmse=float('inf'), mae=float('inf')),
+            quality='bad',
+            curvePoints=[],
+            valid=False,
+            error=error
+        )
+
+    # Check coverage (how many valid predictions)
+    valid_mask = np.isfinite(y_pred)
+    coverage = np.sum(valid_mask) / len(y_pred)
+
+    if coverage < 0.5:
+        return EvaluateResult(
+            expression=expression,
+            expressionLatex=expression,
+            statistics=FitStatistics(r2=-999, rmse=float('inf'), mae=float('inf')),
+            quality='bad',
+            curvePoints=[],
+            valid=False,
+            error=f'Domain invalid for most data points ({coverage*100:.1f}% valid)'
+        )
+
+    # Calculate metrics
+    metrics = calculate_metrics(y_data, y_pred, len(request.parameters))
+
+    # Generate curve points for visualization
+    x_data_min, x_data_max = x_data.min(), x_data.max()
+    x_data_range = x_data_max - x_data_min
+
+    if request.xRange:
+        x_curve_min, x_curve_max = request.xRange
+    else:
+        x_extend = max(x_data_range * 2, 15)
+        x_curve_min = min(x_data_min - x_extend, -20)
+        x_curve_max = max(x_data_max + x_extend, 20)
+
+    N_SAMPLES = 1000
+    x_curve = np.linspace(x_curve_min, x_curve_max, N_SAMPLES)
+
+    # Evaluate for curve
+    y_curve, _, _, _ = evaluate_with_params(request.modelFamily, request.parameters, x_curve)
+
+    # Filter out NaN/Infinity values
+    curve_points = [
+        Point(x=float(xi), y=float(yi))
+        for xi, yi in zip(x_curve, y_curve)
+        if np.isfinite(xi) and np.isfinite(yi)
+    ]
+
+    return EvaluateResult(
+        expression=expression,
+        expressionLatex=expression,
+        statistics=metrics,
+        quality=determine_quality(metrics.r2),
+        curvePoints=curve_points,
+        valid=True,
+        error=None
+    )
 
 
 if __name__ == "__main__":

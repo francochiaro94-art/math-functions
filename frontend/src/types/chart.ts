@@ -38,6 +38,22 @@ export interface FitStatistics {
   bic?: number;
 }
 
+export interface ModelParameter {
+  name: string;
+  value: number;
+  label: string;
+  hint?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+}
+
+export interface ModelParameterSchema {
+  modelFamily: string;
+  expressionTemplate: string;
+  parameters: ModelParameter[];
+}
+
 export type FitQuality = 'bad' | 'regular' | 'good';
 
 export interface FitResult {
@@ -47,6 +63,7 @@ export interface FitResult {
   quality: FitQuality;
   curvePoints: Point[];
   modelType: string;
+  parameterSchema?: ModelParameterSchema;
 }
 
 export interface AnalyticalProperties {

@@ -5,7 +5,8 @@ import { CartesianChart } from '@/components/CartesianChart';
 import { LatexRenderer, expressionToLatex, derivativeToLatex, integralToLatex } from '@/components/LatexRenderer';
 import { Tooltip, metricTooltips } from '@/components/Tooltip';
 import { CollapsibleCard } from '@/components/CollapsibleCard';
-import type { Point, FittedCurve, FittingObjective, FitResult, AnalyticalProperties, IntegralResult } from '@/types/chart';
+import { ParameterEditor } from '@/components/ParameterEditor';
+import type { Point, FittedCurve, FittingObjective, FitResult, AnalyticalProperties, IntegralResult, ModelParameterSchema } from '@/types/chart';
 
 const MAX_POINTS = 50000;
 
@@ -35,6 +36,12 @@ export default function Home() {
   const [integralRange, setIntegralRange] = useState<{ a: Point; b: Point } | null>(null);
   const [integralResult, setIntegralResult] = useState<IntegralResult | null>(null);
   const [integralSelectionStep, setIntegralSelectionStep] = useState<'a' | 'b' | null>(null);
+
+  // Edit mode state
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [originalFitResult, setOriginalFitResult] = useState<FitResult | null>(null);
+  const [isEvaluating, setIsEvaluating] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
   // File input ref
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -234,6 +241,147 @@ export default function Home() {
     }
   }, [fitResult]);
 
+  // Start edit mode
+  const handleStartEdit = useCallback(() => {
+    if (fitResult) {
+      setOriginalFitResult(fitResult);
+      setIsEditMode(true);
+      setEditError(null);
+    }
+  }, [fitResult]);
+
+  // Cancel edit mode
+  const handleCancelEdit = useCallback(() => {
+    if (originalFitResult) {
+      setFitResult(originalFitResult);
+      setFittedCurve({
+        points: originalFitResult.curvePoints,
+        expression: originalFitResult.expression,
+        color: '#22c55e',
+      });
+    }
+    setIsEditMode(false);
+    setEditError(null);
+  }, [originalFitResult]);
+
+  // Preview parameter changes (debounced, called from ParameterEditor)
+  const handlePreviewParams = useCallback(async (params: Record<string, number>) => {
+    if (!fitResult?.parameterSchema) return;
+
+    setIsEvaluating(true);
+    setEditError(null);
+
+    try {
+      const response = await fetch('http://localhost:8000/evaluate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          modelFamily: fitResult.parameterSchema.modelFamily,
+          parameters: params,
+          points: points.map(p => ({ x: p.x, y: p.y })),
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!result.valid) {
+        setEditError(result.error || 'Invalid parameters');
+        return;
+      }
+
+      // Update preview (but don't save to originalFitResult)
+      setFitResult(prev => prev ? {
+        ...prev,
+        expression: result.expression,
+        expressionLatex: result.expressionLatex,
+        statistics: result.statistics,
+        quality: result.quality,
+        curvePoints: result.curvePoints,
+        parameterSchema: {
+          ...prev.parameterSchema!,
+          parameters: prev.parameterSchema!.parameters.map(p => ({
+            ...p,
+            value: params[p.name] ?? p.value,
+          })),
+        },
+      } : null);
+
+      setFittedCurve({
+        points: result.curvePoints,
+        expression: result.expression,
+        color: '#22c55e',
+      });
+
+      setEditError(null);
+    } catch (error) {
+      setEditError('Failed to evaluate parameters');
+    } finally {
+      setIsEvaluating(false);
+    }
+  }, [fitResult, points]);
+
+  // Apply parameter changes (save as new baseline)
+  const handleApplyParams = useCallback(async (params: Record<string, number>) => {
+    if (!fitResult?.parameterSchema) return;
+
+    setIsEvaluating(true);
+    setEditError(null);
+
+    try {
+      const response = await fetch('http://localhost:8000/evaluate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          modelFamily: fitResult.parameterSchema.modelFamily,
+          parameters: params,
+          points: points.map(p => ({ x: p.x, y: p.y })),
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!result.valid) {
+        setEditError(result.error || 'Invalid parameters');
+        return;
+      }
+
+      // Create new fit result with updated parameters
+      const newFitResult: FitResult = {
+        ...fitResult,
+        expression: result.expression,
+        expressionLatex: result.expressionLatex,
+        statistics: result.statistics,
+        quality: result.quality,
+        curvePoints: result.curvePoints,
+        parameterSchema: {
+          ...fitResult.parameterSchema,
+          parameters: fitResult.parameterSchema.parameters.map(p => ({
+            ...p,
+            value: params[p.name] ?? p.value,
+          })),
+        },
+      };
+
+      setFitResult(newFitResult);
+      setOriginalFitResult(newFitResult);
+      setFittedCurve({
+        points: result.curvePoints,
+        expression: result.expression,
+        color: '#22c55e',
+      });
+
+      // Clear analysis since parameters changed
+      setAnalyticalProps(null);
+      setIntegralResult(null);
+      setIsEditMode(false);
+      setEditError(null);
+    } catch (error) {
+      setEditError('Failed to apply parameters');
+    } finally {
+      setIsEvaluating(false);
+    }
+  }, [fitResult, points]);
+
   // Start integral selection
   const handleStartIntegral = useCallback(() => {
     setMode('selecting-integral');
@@ -288,6 +436,9 @@ export default function Home() {
     setIsFitting(false);
     setFittingSteps([]);
     setFittingProgress(0);
+    setIsEditMode(false);
+    setOriginalFitResult(null);
+    setEditError(null);
   }, []);
 
   const isPaintingMode = mode === 'painting';
@@ -455,11 +606,45 @@ export default function Home() {
                   defaultOpen={true}
                 >
                   <div className="space-y-3">
+                    {/* Function display with edit icon */}
                     <div>
-                      <span className="text-xs text-zinc-500">Function</span>
-                      <div className="text-sm py-1 overflow-x-auto">
-                        <LatexRenderer latex={`y = ${expressionToLatex(fitResult.expression)}`} />
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-zinc-500">Function</span>
+                        {fitResult.parameterSchema && !isEditMode && (
+                          <button
+                            onClick={handleStartEdit}
+                            className="p-1 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors"
+                            title="Edit parameters"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                            </svg>
+                          </button>
+                        )}
+                        {isEditMode && (
+                          <span className="px-2 py-0.5 text-[10px] font-medium rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                            Editing
+                          </span>
+                        )}
                       </div>
+
+                      {/* Show ParameterEditor when in edit mode, otherwise show expression */}
+                      {isEditMode && fitResult.parameterSchema ? (
+                        <div className="mt-2">
+                          <ParameterEditor
+                            schema={fitResult.parameterSchema}
+                            onApply={handleApplyParams}
+                            onCancel={handleCancelEdit}
+                            onPreview={handlePreviewParams}
+                            isLoading={isEvaluating}
+                            error={editError}
+                          />
+                        </div>
+                      ) : (
+                        <div className="text-sm py-1 overflow-x-auto">
+                          <LatexRenderer latex={`y = ${expressionToLatex(fitResult.expression)}`} />
+                        </div>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-2 flex-wrap">

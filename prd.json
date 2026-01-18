@@ -342,6 +342,62 @@
       "priority": 36,
       "passes": true,
       "notes": "SearchTrace dataclass captures all candidate results; heuristics display formatted trace with checkmarks and CV metrics"
+    },
+    {
+      "id": "EDIT-001",
+      "epic": "E16: Editable Fitted Function Parameters",
+      "title": "Enter edit mode via pencil icon",
+      "description": "As a user, I want to click a pencil icon to edit the fitted function so that I can adjust parameters without changing the model type.",
+      "acceptanceCriteria": [
+        "A pencil/edit icon appears next to the displayed function in the Result card when a model is available",
+        "Clicking the icon toggles the function display into an editable parameters UI",
+        "Model name and structure remain unchanged while editing"
+      ],
+      "priority": 37,
+      "passes": true,
+      "notes": "Pencil icon added next to Function label; clicking enters edit mode with ParameterEditor component; model type and expression template remain locked"
+    },
+    {
+      "id": "EDIT-002",
+      "epic": "E16: Editable Fitted Function Parameters",
+      "title": "Edit only parameters/constants (structure locked)",
+      "description": "As a user, I want to edit only the constants in the function so that I can fine-tune the curve without altering the equation structure.",
+      "acceptanceCriteria": [
+        "Only numeric parameters are editable (e.g., a, b, c, d)",
+        "No UI allows editing operators or adding/removing terms",
+        "User cannot introduce new variables or change model family"
+      ],
+      "priority": 38,
+      "passes": true,
+      "notes": "ParameterEditor shows only numeric input fields per parameter; expression template shown read-only; backend ModelParameterSchema defines param names/labels/hints per model family"
+    },
+    {
+      "id": "EDIT-003",
+      "epic": "E16: Editable Fitted Function Parameters",
+      "title": "Preview updates the curve and metrics",
+      "description": "As a user, I want changes to update the plot and quality metrics so that I can see the impact of my edits immediately.",
+      "acceptanceCriteria": [
+        "On valid parameter changes, the plotted fitted curve updates immediately (debounced)",
+        "Quality metrics (R², RMSE, MAE) recompute based on edited parameters",
+        "Downstream analysis (derivatives, extrema, integrals) uses edited parameters"
+      ],
+      "priority": 39,
+      "passes": true,
+      "notes": "Live preview with 150ms debounce via onPreview callback; /evaluate endpoint returns updated expression, curvePoints, and metrics; analysis cleared on Apply to use new params"
+    },
+    {
+      "id": "EDIT-004",
+      "epic": "E16: Editable Fitted Function Parameters",
+      "title": "Cancel/reset editing safely",
+      "description": "As a user, I want to cancel edits or reset back to the fitted values so that I can experiment without breaking anything.",
+      "acceptanceCriteria": [
+        "Cancel exits edit mode and restores the original fitted parameters",
+        "Reset restores parameters to the original fitted values while staying in edit mode",
+        "Save/Apply persists the edited parameters as the current function state"
+      ],
+      "priority": 40,
+      "passes": true,
+      "notes": "Cancel restores originalFitResult; Reset in ParameterEditor reverts to schema.parameters values; Apply updates both fitResult and originalFitResult as new baseline"
     }
   ]
 }
