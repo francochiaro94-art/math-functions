@@ -2360,39 +2360,32 @@ def fit_curve(request: FitRequest):
     params = best_candidate.info.get('params', {})
 
     # For Linear/Polynomial, we need to extract params differently
+    # Regex pattern for numbers (including scientific notation)
+    import re
+    num_pattern = r'-?\d+\.?\d*(?:e[+-]?\d+)?'
+
     if model_type == 'Linear':
         # Parse from expression: y = mx + b
-        import re
-        match = re.match(r'y\s*=\s*(-?[\d.e+-]+)x\s*[+-]\s*([\d.e+-]+)', best_candidate.expression)
+        match = re.match(rf'y\s*=\s*({num_pattern})x\s*([+-])\s*({num_pattern})', best_candidate.expression)
         if match:
-            params = {'m': float(match.group(1)), 'b': float(match.group(2))}
-            if '-' in best_candidate.expression.split('x')[1]:
-                params['b'] = -params['b']
+            m_val = float(match.group(1))
+            sign = match.group(2)
+            b_val = float(match.group(3))
+            if sign == '-':
+                b_val = -b_val
+            params = {'m': m_val, 'b': b_val}
     elif 'Polynomial' in model_type:
-        # For polynomial, extract coefficients from pipeline (they're in the expression)
-        # This is handled differently - we'll parse from expression
-        import re
-        if 'degree 2' in model_type:
-            terms = re.findall(r'(-?[\d.e+-]+)', best_candidate.expression)
-            if len(terms) >= 3:
-                params = {'a2': float(terms[0]) if len(terms) > 0 else 0,
-                          'a1': float(terms[1]) if len(terms) > 1 else 0,
-                          'a0': float(terms[2]) if len(terms) > 2 else 0}
-        elif 'degree 3' in model_type:
-            terms = re.findall(r'(-?[\d.e+-]+)', best_candidate.expression)
-            if len(terms) >= 4:
-                params = {'a3': float(terms[0]) if len(terms) > 0 else 0,
-                          'a2': float(terms[1]) if len(terms) > 1 else 0,
-                          'a1': float(terms[2]) if len(terms) > 2 else 0,
-                          'a0': float(terms[3]) if len(terms) > 3 else 0}
-        elif 'degree 4' in model_type:
-            terms = re.findall(r'(-?[\d.e+-]+)', best_candidate.expression)
-            if len(terms) >= 5:
-                params = {'a4': float(terms[0]) if len(terms) > 0 else 0,
-                          'a3': float(terms[1]) if len(terms) > 1 else 0,
-                          'a2': float(terms[2]) if len(terms) > 2 else 0,
-                          'a1': float(terms[3]) if len(terms) > 3 else 0,
-                          'a0': float(terms[4]) if len(terms) > 4 else 0}
+        # Extract all numbers from expression
+        terms = re.findall(num_pattern, best_candidate.expression)
+        # Filter out empty strings and convert to float
+        terms = [float(t) for t in terms if t and t not in ['+', '-']]
+
+        if 'degree 2' in model_type and len(terms) >= 3:
+            params = {'a2': terms[0], 'a1': terms[1], 'a0': terms[2]}
+        elif 'degree 3' in model_type and len(terms) >= 4:
+            params = {'a3': terms[0], 'a2': terms[1], 'a1': terms[2], 'a0': terms[3]}
+        elif 'degree 4' in model_type and len(terms) >= 5:
+            params = {'a4': terms[0], 'a3': terms[1], 'a2': terms[2], 'a1': terms[3], 'a0': terms[4]}
 
     parameter_schema = get_parameter_schema(model_type, params)
 
