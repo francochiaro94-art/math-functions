@@ -12,6 +12,7 @@ An interactive web application for fitting mathematical functions to data points
   - Linear, Polynomial (degree 2-4)
   - Exponential, Logarithmic, Square Root
   - Power, Sinusoidal, Reciprocal, Rational
+- **Model Pre-Selection**: Choose "Auto" for best fit, or force a specific model family
 - **Edit Parameters**: Fine-tune fitted function parameters with live preview
 - **Analysis Tools**: Compute derivatives, find extrema, calculate integrals
 - **Beautiful Math**: LaTeX-rendered equations and professional visualizations
@@ -38,7 +39,7 @@ You'll need to install these first (if you don't have them):
 
 **Option A - Using Git:**
 ```bash
-git clone https://github.com/francochiaro94-art/math-functions.git
+git clone https://github.com/francochiaro/math-functions.git
 cd math-functions
 ```
 
@@ -114,12 +115,15 @@ Press `Ctrl+C` in both terminal windows.
 
 ### 2. Fit a Curve
 
-- Select a fitting objective:
+- Select a **Model**:
+  - **Auto (best fit)**: Let the app find the best model automatically
+  - Or choose a specific model (Linear, Exponential, Sinusoidal, etc.)
+- Select a fitting **Objective**:
   - **Accuracy**: Best mathematical fit
   - **Interpretability**: Simpler functions preferred
   - **Balanced**: Mix of both
 - Click **"Estimate Function"**
-- The app will find the best-fitting function
+- The app will fit using your selected model (or find the best one if Auto)
 
 ### 3. Edit Parameters (Optional)
 
