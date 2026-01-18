@@ -546,6 +546,28 @@ export default function Home() {
                               <LatexRenderer latex={derivativeToLatex(analyticalProps.secondDerivative, 2)} />
                             </div>
                           </div>
+                          {analyticalProps.asymptotes && analyticalProps.asymptotes.length > 0 && (
+                            <div>
+                              <span className="text-xs text-zinc-500">Asymptotes</span>
+                              {analyticalProps.asymptotes
+                                .sort((a, b) => {
+                                  // Sort: vertical first (by value), then horizontal
+                                  if (a.type === 'vertical' && b.type !== 'vertical') return -1;
+                                  if (a.type !== 'vertical' && b.type === 'vertical') return 1;
+                                  return Number(a.value) - Number(b.value);
+                                })
+                                .map((a, i) => (
+                                <div key={i} className="text-sm py-0.5">
+                                  <LatexRenderer
+                                    latex={a.type === 'vertical'
+                                      ? `\\text{Vertical: } x = ${typeof a.value === 'number' ? a.value.toFixed(2) : a.value}`
+                                      : `\\text{Horizontal: } y = ${typeof a.value === 'number' ? a.value.toFixed(2) : a.value}`
+                                    }
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          )}
                           {analyticalProps.extrema.length > 0 && (
                             <div>
                               <span className="text-xs text-zinc-500">Extrema</span>
