@@ -109,7 +109,11 @@ def fit_linear(x: np.ndarray, y: np.ndarray) -> tuple[str, np.ndarray, dict]:
     m, b = model.coef_[0], model.intercept_
     y_pred = model.predict(x.reshape(-1, 1))
     expr = f"y = {m:.6g}x + {b:.6g}" if b >= 0 else f"y = {m:.6g}x - {abs(b):.6g}"
-    return expr, y_pred, {'type': 'Linear', 'complexity': 1}
+
+    def eval_func(x_new):
+        return m * x_new + b
+
+    return expr, y_pred, {'type': 'Linear', 'complexity': 1, 'eval_func': eval_func}
 
 
 def fit_polynomial(x: np.ndarray, y: np.ndarray, degree: int = 2) -> tuple[str, np.ndarray, dict]:
@@ -136,7 +140,11 @@ def fit_polynomial(x: np.ndarray, y: np.ndarray, degree: int = 2) -> tuple[str, 
     expr = "y = " + " + ".join(terms) if terms else "y = 0"
     expr = expr.replace("+ -", "- ")
 
-    return expr, y_pred, {'type': f'Polynomial (degree {degree})', 'complexity': degree}
+    def eval_func(x_new):
+        x_arr = np.atleast_1d(x_new)
+        return model.predict(x_arr.reshape(-1, 1))
+
+    return expr, y_pred, {'type': f'Polynomial (degree {degree})', 'complexity': degree, 'eval_func': eval_func}
 
 
 def fit_exponential(x: np.ndarray, y: np.ndarray) -> tuple[str, np.ndarray, dict]:
@@ -265,8 +273,13 @@ def fit_logarithmic(x: np.ndarray, y: np.ndarray) -> tuple[str, np.ndarray, dict
         a, b = model.coef_[0], model.intercept_
         y_pred = a * np.log(x) + b
 
+        def eval_func(x_new):
+            x_arr = np.atleast_1d(x_new)
+            result = np.where(x_arr > 0, a * np.log(x_arr) + b, np.nan)
+            return result
+
         expr = f"y = {a:.6g} * ln(x) + {b:.6g}" if b >= 0 else f"y = {a:.6g} * ln(x) - {abs(b):.6g}"
-        return expr, y_pred, {'type': 'Logarithmic', 'complexity': 2}
+        return expr, y_pred, {'type': 'Logarithmic', 'complexity': 2, 'eval_func': eval_func}
     except Exception:
         return fit_linear(x, y)
 
@@ -282,13 +295,18 @@ def fit_power(x: np.ndarray, y: np.ndarray) -> tuple[str, np.ndarray, dict]:
         model = LinearRegression()
         model.fit(log_x.reshape(-1, 1), log_y)
 
-        b = model.coef_[0]
-        a = np.exp(model.intercept_)
+        b_exp = model.coef_[0]
+        a_coef = np.exp(model.intercept_)
 
-        y_pred = a * np.power(x, b)
+        y_pred = a_coef * np.power(x, b_exp)
 
-        expr = f"y = {a:.6g} * x^{b:.6g}"
-        return expr, y_pred, {'type': 'Power', 'complexity': 2}
+        def eval_func(x_new):
+            x_arr = np.atleast_1d(x_new)
+            result = np.where(x_arr > 0, a_coef * np.power(x_arr, b_exp), np.nan)
+            return result
+
+        expr = f"y = {a_coef:.6g} * x^{b_exp:.6g}"
+        return expr, y_pred, {'type': 'Power', 'complexity': 2, 'eval_func': eval_func}
     except Exception:
         return fit_linear(x, y)
 
@@ -307,8 +325,14 @@ def fit_rational(x: np.ndarray, y: np.ndarray) -> tuple[str, np.ndarray, dict]:
 
         y_pred = rational_func(x, *popt)
 
+        def eval_func(x_new):
+            x_arr = np.atleast_1d(x_new)
+            denom = c * x_arr + d
+            result = np.where(np.abs(denom) > 1e-10, (a * x_arr + b) / denom, np.nan)
+            return result
+
         expr = f"y = ({a:.4g}x + {b:.4g}) / ({c:.4g}x + {d:.4g})"
-        return expr, y_pred, {'type': 'Rational', 'complexity': 3}
+        return expr, y_pred, {'type': 'Rational', 'complexity': 3, 'eval_func': eval_func}
     except Exception:
         return fit_linear(x, y)
 
@@ -332,8 +356,11 @@ def fit_spline(x: np.ndarray, y: np.ndarray) -> tuple[str, np.ndarray, dict]:
         spline = UnivariateSpline(x_unique, y_unique, s=len(x_unique) * 0.1)
         y_pred = spline(x)
 
+        def eval_func(x_new):
+            return spline(x_new)
+
         expr = "y = Spline(x)"
-        return expr, y_pred, {'type': 'Smoothing Spline', 'complexity': 5}
+        return expr, y_pred, {'type': 'Smoothing Spline', 'complexity': 5, 'eval_func': eval_func}
     except Exception:
         return fit_linear(x, y)
 
@@ -360,8 +387,11 @@ def fit_sinusoidal(x: np.ndarray, y: np.ndarray) -> tuple[str, np.ndarray, dict]
 
         y_pred = sin_func(x, *popt)
 
+        def eval_func(x_new):
+            return A * np.sin(B * x_new + C) + D
+
         expr = f"y = {A:.4g} * sin({B:.4g}x + {C:.4g}) + {D:.4g}"
-        return expr, y_pred, {'type': 'Sinusoidal', 'complexity': 4}
+        return expr, y_pred, {'type': 'Sinusoidal', 'complexity': 4, 'eval_func': eval_func}
     except Exception:
         return fit_linear(x, y)
 
@@ -700,20 +730,31 @@ def fit_curve(request: FitRequest):
     # Select best model
     best = max(results, key=lambda r: r['score'])
 
-    # Generate curve points for visualization
+    # Generate curve points for visualization (dense sampling for smooth curves)
     x_min, x_max = x.min(), x.max()
     x_range = x_max - x_min
-    x_curve = np.linspace(x_min - 0.1 * x_range, x_max + 0.1 * x_range, 200)
+    N_SAMPLES = 800  # Dense sampling for smooth visualization
+    x_curve = np.linspace(x_min - 0.1 * x_range, x_max + 0.1 * x_range, N_SAMPLES)
 
-    # Refit best model on full range
-    try:
-        _, y_curve, _ = [m for m in models if m[0] == best['name']][0][1](x, y)
-        # Interpolate for curve points
-        from scipy.interpolate import interp1d
-        interp_func = interp1d(x, best['y_pred'], kind='linear', fill_value='extrapolate')
-        y_curve = interp_func(x_curve)
-    except Exception:
-        y_curve = np.interp(x_curve, x, best['y_pred'])
+    # Use eval_func if available for proper curve evaluation (not interpolation)
+    if 'eval_func' in best['info'] and best['info']['eval_func'] is not None:
+        # Directly evaluate the fitted model at curve x points
+        y_curve = best['info']['eval_func'](x_curve)
+    else:
+        # Fallback: use cubic interpolation for smoother curves
+        try:
+            from scipy.interpolate import interp1d
+            # Sort by x for proper interpolation
+            sort_idx = np.argsort(x)
+            x_sorted = x[sort_idx]
+            y_sorted = best['y_pred'][sort_idx]
+            # Use cubic interpolation for smoother curves (not linear!)
+            kind = 'cubic' if len(x) >= 4 else 'linear'
+            interp_func = interp1d(x_sorted, y_sorted, kind=kind,
+                                   fill_value='extrapolate', bounds_error=False)
+            y_curve = interp_func(x_curve)
+        except Exception:
+            y_curve = np.interp(x_curve, x, best['y_pred'])
 
     curve_points = [Point(x=float(xi), y=float(yi)) for xi, yi in zip(x_curve, y_curve)]
 
