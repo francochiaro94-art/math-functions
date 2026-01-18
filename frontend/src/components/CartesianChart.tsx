@@ -210,61 +210,99 @@ export function CartesianChart({
       }
     }
 
-    // Draw fitted curve with discontinuity handling
+    // Draw fitted curve with discontinuity handling and extrapolation styling
     if (fittedCurve && fittedCurve.points.length > 0) {
       const lineGenerator = d3.line<Point>()
         .x(d => x(d.x))
         .y(d => y(d.y))
         .curve(d3.curveMonotoneX);
 
+      // Determine data range from user points (for interpolation vs extrapolation)
+      const dataXMin = points.length > 0 ? Math.min(...points.map(p => p.x)) : bounds.xMin;
+      const dataXMax = points.length > 0 ? Math.max(...points.map(p => p.x)) : bounds.xMax;
+
       // Split curve into segments at discontinuities (NaN, Infinity, large jumps)
-      const segments: Point[][] = [];
-      let currentSegment: Point[] = [];
-      const DISCONTINUITY_THRESHOLD = (bounds.yMax - bounds.yMin) * 0.5; // 50% of visible y-range
+      const DISCONTINUITY_THRESHOLD = (bounds.yMax - bounds.yMin) * 0.5;
 
-      for (let i = 0; i < fittedCurve.points.length; i++) {
-        const point = fittedCurve.points[i];
-        const isValid = Number.isFinite(point.y) && Number.isFinite(point.x);
+      // Helper to split points into continuous segments
+      const splitIntoSegments = (curvePoints: Point[]): Point[][] => {
+        const segments: Point[][] = [];
+        let currentSegment: Point[] = [];
 
-        if (!isValid) {
-          // Point is NaN or Infinity - end current segment
-          if (currentSegment.length > 1) {
-            segments.push(currentSegment);
-          }
-          currentSegment = [];
-          continue;
-        }
+        for (let i = 0; i < curvePoints.length; i++) {
+          const point = curvePoints[i];
+          const isValid = Number.isFinite(point.y) && Number.isFinite(point.x);
 
-        // Check for discontinuity (large jump from previous point)
-        if (currentSegment.length > 0) {
-          const prevPoint = currentSegment[currentSegment.length - 1];
-          const yJump = Math.abs(point.y - prevPoint.y);
-          const xStep = Math.abs(point.x - prevPoint.x);
-
-          // If y changes by more than threshold for a small x step, it's a discontinuity
-          if (xStep > 0 && yJump > DISCONTINUITY_THRESHOLD) {
+          if (!isValid) {
             if (currentSegment.length > 1) {
               segments.push(currentSegment);
             }
             currentSegment = [];
+            continue;
           }
+
+          if (currentSegment.length > 0) {
+            const prevPoint = currentSegment[currentSegment.length - 1];
+            const yJump = Math.abs(point.y - prevPoint.y);
+            const xStep = Math.abs(point.x - prevPoint.x);
+
+            if (xStep > 0 && yJump > DISCONTINUITY_THRESHOLD) {
+              if (currentSegment.length > 1) {
+                segments.push(currentSegment);
+              }
+              currentSegment = [];
+            }
+          }
+
+          currentSegment.push(point);
         }
 
-        currentSegment.push(point);
-      }
+        if (currentSegment.length > 1) {
+          segments.push(currentSegment);
+        }
 
-      // Add final segment
-      if (currentSegment.length > 1) {
-        segments.push(currentSegment);
-      }
+        return segments;
+      };
 
-      // Draw each segment as a separate path
-      segments.forEach(segment => {
+      // Separate curve points into interpolation and extrapolation regions
+      const interpolationPoints = fittedCurve.points.filter(p => p.x >= dataXMin && p.x <= dataXMax);
+      const leftExtrapolationPoints = fittedCurve.points.filter(p => p.x < dataXMin);
+      const rightExtrapolationPoints = fittedCurve.points.filter(p => p.x > dataXMax);
+
+      // Draw interpolation (solid line)
+      const interpolationSegments = splitIntoSegments(interpolationPoints);
+      interpolationSegments.forEach(segment => {
         g.append('path')
           .datum(segment)
           .attr('fill', 'none')
           .attr('stroke', fittedCurve.color || '#22c55e')
           .attr('stroke-width', 2.5)
+          .attr('d', lineGenerator);
+      });
+
+      // Draw left extrapolation (dotted line)
+      const leftSegments = splitIntoSegments(leftExtrapolationPoints);
+      leftSegments.forEach(segment => {
+        g.append('path')
+          .datum(segment)
+          .attr('fill', 'none')
+          .attr('stroke', fittedCurve.color || '#22c55e')
+          .attr('stroke-width', 2)
+          .attr('stroke-dasharray', '6,4')
+          .attr('stroke-opacity', 0.7)
+          .attr('d', lineGenerator);
+      });
+
+      // Draw right extrapolation (dotted line)
+      const rightSegments = splitIntoSegments(rightExtrapolationPoints);
+      rightSegments.forEach(segment => {
+        g.append('path')
+          .datum(segment)
+          .attr('fill', 'none')
+          .attr('stroke', fittedCurve.color || '#22c55e')
+          .attr('stroke-width', 2)
+          .attr('stroke-dasharray', '6,4')
+          .attr('stroke-opacity', 0.7)
           .attr('d', lineGenerator);
       });
     }
